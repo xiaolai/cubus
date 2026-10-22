@@ -17,6 +17,7 @@ import { after, before, test } from 'node:test';
 
 import { decodePng } from '../png.mjs';
 import { LIVENESS_MS, startBrowserFixture } from './harness.mjs';
+import { cameraSettled } from './fake-scan.mjs';
 
 const THEMES = ['white', 'cream', 'night'];
 /** The desktop windows of the layout contract, one per composition: the walking screens draw different controls in each. */
@@ -191,6 +192,7 @@ for (const engine of ['webkit', 'chromium']) {
 test('the scan notice, a focusable scroller, shows the ring when the keyboard reaches it — chromium', async () => {
   const { context, page, errors } = await openRoute('chromium', 'scan');
   try {
+    await cameraSettled(page);
     await page.evaluate(() => document.querySelector('ai-scan-panel').dispatchEvent(new CustomEvent('scan-progress', { detail: {
       phase: 'scanning', message: 'Show one side to the camera to re-read just that side.', captured: [], sides: 0, live: null, confirm: null,
       device: null, complete: false, notice: { title: 'Some stickers were misread', tone: 'err',

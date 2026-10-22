@@ -3281,7 +3281,7 @@ function describeTrack(track) {
   };
 }
 async function listCameras() {
-  const devices = await navigator.mediaDevices.enumerateDevices();
+  const devices = await inTurn("enumerateDevices", () => navigator.mediaDevices.enumerateDevices());
   return devices.filter((d) => d.kind === "videoinput").filter((d) => d.deviceId !== "").map((d, i) => ({ deviceId: d.deviceId, label: d.label || `Camera ${i + 1}` }));
 }
 function raceAbort(promise, signal) {
@@ -3314,8 +3314,41 @@ function videoConstraints(opts) {
   constraints.height = { ideal: opts.height ?? IDEAL_HEIGHT };
   return constraints;
 }
+var turn = Promise.resolve();
+var CAMERA_CALL_RELEASE_MS = 3e4;
+function inTurn(what, ask) {
+  let release = () => {
+  };
+  const released = new Promise((resolve) => {
+    release = resolve;
+  });
+  const mine = turn.then(() => {
+    const asked = ask();
+    const timer = setTimeout(() => {
+      console.warn(
+        `[camera] ${what} has not answered in ${CAMERA_CALL_RELEASE_MS / 1e3} s; later camera calls no longer wait for it`
+      );
+      release();
+    }, CAMERA_CALL_RELEASE_MS);
+    const settled = () => {
+      clearTimeout(timer);
+      release();
+    };
+    asked.then(settled, settled);
+    return asked;
+  });
+  mine.then(
+    () => release(),
+    () => release()
+  );
+  turn = released;
+  return mine;
+}
 async function acquireStream(constraints, signal) {
-  const asked = navigator.mediaDevices.getUserMedia(constraints);
+  const asked = inTurn("getUserMedia", () => {
+    if (signal?.aborted) return Promise.reject(abortError());
+    return navigator.mediaDevices.getUserMedia(constraints);
+  });
   if (signal) {
     void asked.then(
       (stream) => {

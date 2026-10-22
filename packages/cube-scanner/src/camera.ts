@@ -225,7 +225,7 @@ export function describeTrack(
  * granted, so call this after a first `openCamera` for named entries (e.g. two webcams).
  */
 export async function listCameras(): Promise<CameraDevice[]> {
-  const devices = await navigator.mediaDevices.enumerateDevices();
+  const devices = await inTurn('enumerateDevices', () => navigator.mediaDevices.enumerateDevices());
   return (
     devices
       .filter((d) => d.kind === 'videoinput')
@@ -286,6 +286,68 @@ export function videoConstraints(opts: CameraOptions): MediaTrackConstraints {
 }
 
 /**
+ * The platform's camera calls — `getUserMedia` and `enumerateDevices` — ONE AT A TIME, in the order asked.
+ *
+ * WHY (2026-10-22, made precise by the verifier 2026-10-23). In WPE WebKit a page closed right after asking
+ * for the device list and THEN for the camera, with both still pending, aborts the UI process: 10 of 10.
+ * Camera first, either alone, or the page closed one round trip later: 0 of 10 each. The scan screen did
+ * exactly that — its camera menu listed cameras 1–5 ms before the panel's autostart asked for the camera,
+ * and WPE held the list until the camera was answered — so closing the scan screen at `load` aborted the
+ * browser. A wait on the list's side alone did not hold, because the list went first. So every call takes
+ * its turn, and waits for the platform's own answer to the one before — not a caller's abortable race of
+ * it, since a cancelled open leaves the browser still asking. Nothing is lost: before permission the list
+ * is placeholders, which `listCameras` drops; a list asked behind a pending permission prompt would only
+ * have listed placeholders.
+ *
+ * BOUNDED (`CAMERA_CALL_RELEASE_MS`). A call the platform never answers would otherwise hold every later open
+ * and list for the life of the page, where before the gate a second Start simply asked again.
+ */
+let turn: Promise<unknown> = Promise.resolve();
+
+/**
+ * How long a camera call may go unanswered before LATER calls stop waiting for it — 30 s, the native
+ * detector's `OPEN_SETTLE_TIMEOUT_MS` for the same situation, on the same reasoning: a permission prompt is a
+ * human, and a person reading one can take a while, so this must not be short.
+ *
+ * WHAT IT RELEASES IS THE QUEUE, NOT THE CALL. The unanswered call keeps its promise and its caller keeps
+ * waiting on the platform — a person still deciding is not interrupted. Only callers behind it go ahead,
+ * which may put two calls in flight together: the overlap the gate exists to prevent, accepted here because
+ * the alternative is a camera that can never be opened again on this page, and only after a call that the
+ * platform has stopped answering. The release is said on the console, naming the call.
+ */
+export const CAMERA_CALL_RELEASE_MS = 30_000;
+
+function inTurn<T>(what: string, ask: () => Promise<T>): Promise<T> {
+  let release: () => void = () => {};
+  const released = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const mine = turn.then(() => {
+    const asked = ask();
+    // Timed from the moment it is ASKED: a call waiting its turn behind a slow one has not been unanswered.
+    const timer = setTimeout(() => {
+      console.warn(
+        `[camera] ${what} has not answered in ${CAMERA_CALL_RELEASE_MS / 1000} s; later camera calls no longer wait for it`,
+      );
+      release();
+    }, CAMERA_CALL_RELEASE_MS);
+    const settled = (): void => {
+      clearTimeout(timer);
+      release();
+    };
+    asked.then(settled, settled);
+    return asked;
+  });
+  // A call that never got asked (an earlier turn threw, or this one's `ask` threw) releases at once.
+  mine.then(
+    () => release(),
+    () => release(),
+  );
+  turn = released;
+  return mine;
+}
+
+/**
  * Ask the platform for the camera, racing the request against `signal`.
  *
  * RACED, AND THE LATE STREAM IS STOPPED (2026-09-21). The request was awaited bare, so a `stop()`
@@ -299,7 +361,11 @@ async function acquireStream(
   constraints: MediaStreamConstraints,
   signal: AbortSignal | undefined,
 ): Promise<MediaStream> {
-  const asked = navigator.mediaDevices.getUserMedia(constraints);
+  // An open cancelled while it waited its turn never reaches the platform at all.
+  const asked = inTurn('getUserMedia', () => {
+    if (signal?.aborted) return Promise.reject(abortError());
+    return navigator.mediaDevices.getUserMedia(constraints);
+  });
   if (signal) {
     void asked.then(
       (stream) => {

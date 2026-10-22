@@ -21,9 +21,91 @@ const SERVE = fileURLToPath(new URL('../../serve.mjs', import.meta.url));
  */
 export const LIVENESS_MS = 180_000;
 
+/** The calls that wait for a page's `load`, each reported on when it times out. */
+const LOAD_WAITS = ['goto', 'reload', 'waitForLoadState'];
+/** How long the report may wait for the page to say its own state: the page may be the thing that is stuck. */
+const ASK_PAGE_MS = 2000;
+/** The most pending requests the report lists; the rest are counted. */
+const LISTED = 20;
+
+/**
+ * Make every wait for `load` on `page` that TIMES OUT say what the page was still waiting on.
+ *
+ * WHY. CI 39607667813 (2026-10-21): a WebKit `page.goto` of the scan screen waited the whole 180 s bound
+ * and said only `navigating to "…/#/scan", waiting until "load"`. That cannot tell apart the three things
+ * that hold `load` back — a document that never arrived, a request that was never answered or never
+ * finished, and a page with nothing in flight whose `load` was delayed some other way — so the occurrence
+ * was not a finding, and geometry.test.mjs had already met the same signature twice without one. The
+ * report names each request asked and not finished (answered or not, and how long after the wait began),
+ * the document's URL and `readyState`, and when DOMContentLoaded and `load` fired since the wait began.
+ *
+ * The error is the same object, still a `TimeoutError`, with the report added to its message and stack:
+ * a caller that tells a timeout by its name (geometry's `openAt`) sees no difference. Any other error, and
+ * every wait that succeeds, passes through untouched.
+ *
+ * Two things a reader of a WebKit report should know (measured 2026-10-22, macOS and Linux WPE):
+ * - On the app's pages, WebKit's Playwright raised no `requestfinished` for the top-level document even
+ *   when the page loaded, so the app's own URL listed "answered 200, body unfinished" is ordinary there;
+ *   `readyState` says whether the document arrived. (A plain test page's document did finish.)
+ * - WebKit hands a response to the page only once it has the bytes to sniff its type: an image answered
+ *   with 10 bytes of its body read as "no answer", with 600 as "answered". So "no answer" there means no
+ *   response reached the page, which includes one whose first few hundred bytes have not arrived.
+ */
+function reportStalledLoads(page) {
+  const pending = new Map();
+  page.on('request', (request) => pending.set(request, { asked: Date.now(), status: null }));
+  page.on('response', (response) => {
+    const entry = pending.get(response.request());
+    if (entry) entry.status = response.status();
+  });
+  page.on('requestfinished', (request) => pending.delete(request));
+  page.on('requestfailed', (request) => pending.delete(request));
+  const fired = { domcontentloaded: null, load: null };
+  page.on('domcontentloaded', () => { fired.domcontentloaded = Date.now(); });
+  page.on('load', () => { fired.load = Date.now(); });
+
+  const report = async (began) => {
+    const since = (at) => (at !== null && at >= began ? `after ${at - began} ms` : 'not since the wait began');
+    let timer;
+    const state = await Promise.race([
+      page.evaluate(() => ({ url: location.href, readyState: document.readyState }))
+        .then((s) => `the document ${s.url} is readyState "${s.readyState}"`, (e) => `the page could not say its state (${String(e?.message ?? e).split('\n')[0]})`),
+      new Promise((r) => { timer = setTimeout(() => r(`the page did not answer for its state within ${ASK_PAGE_MS} ms`), ASK_PAGE_MS); }),
+    ]).finally(() => clearTimeout(timer));
+    const open = [...pending.entries()].sort((a, b) => a[1].asked - b[1].asked);
+    const lines = open.slice(0, LISTED).map(([request, { asked, status }]) => {
+      const answer = status === null ? 'no answer' : `answered ${status}, body unfinished`;
+      const when = asked >= began ? `${asked - began} ms after` : `${began - asked} ms before`;
+      return `    ${request.method()} ${request.url()} (${request.resourceType()}): ${answer}, asked ${when} the wait began`;
+    });
+    if (open.length > LISTED) lines.push(`    … and ${open.length - LISTED} more`);
+    return [
+      `[harness] ${state}; DOMContentLoaded ${since(fired.domcontentloaded)}, load ${since(fired.load)}.`,
+      `[harness] ${open.length} request(s) still pending${open.length ? ':' : '.'}`,
+      ...lines,
+    ].join('\n');
+  };
+
+  for (const name of LOAD_WAITS) {
+    const wait = page[name].bind(page);
+    page[name] = async (...args) => {
+      const began = Date.now();
+      try {
+        return await wait(...args);
+      } catch (error) {
+        if (error?.name !== 'TimeoutError' || page.isClosed()) throw error;
+        const said = error.message;
+        error.message = `${said}\n${await report(began)}`;
+        if (typeof error.stack === 'string') error.stack = error.stack.replace(said, error.message);
+        throw error;
+      }
+    };
+  }
+}
+
 /**
  * Launch a browser for a test. EVERY browser a suite drives comes from here — `browser-launch.test.mjs`
- * refuses a direct `webkit.launch()` — because two guards hold only for a browser that has them:
+ * refuses a direct `webkit.launch()` — because three guards hold only for a browser that has them:
  *
  * - Every context gets the navigation bound, `newPage`'s own included — it makes its context through
  *   `newContext` — so no suite inherits the 30 s default by not thinking of it.
@@ -32,8 +114,12 @@ export const LIVENESS_MS = 180_000;
  *   `keyboard.press` takes no timeout, and with WebKit's content process killed it was still pending
  *   after 20 s on macOS — a focus-visible run on Linux waited 35 minutes with no web process left.
  *   Closing the page rejects every call in flight on it, with the reason in its message, so the test
- *   fails where the page died and says so rather than waiting on a page that is gone. A browser that
- *   disconnects already rejects every call on its own connection.
+ *   fails where the page died and says so rather than waiting on a page that is gone.
+ * - A browser that DISCONNECTS fails every call in flight on anything it handed out, and every call
+ *   after, naming the disconnect (`raceDisconnect`). A browser that is killed rejects its calls itself,
+ *   but not every abort is a kill: a `newPage` in flight when WPE's `MiniBrowser` aborted on its own
+ *   never settled, `disconnected` notwithstanding (noble image, 2026-10-22).
+ * - A wait for `load` that times out says what the page was still waiting on (`reportStalledLoads`).
  *
  * @param {'webkit' | 'chromium'} engine
  * @param {import('playwright').LaunchOptions} [options]
@@ -43,18 +129,120 @@ export async function launchBrowser(engine, options = {}) {
   const engines = { webkit, chromium };
   if (!Object.hasOwn(engines, engine)) throw new Error(`launchBrowser: no engine "${engine}"`);
   const browser = await engines[engine].launch(options);
+  const guard = raceDisconnect(browser, engine);
   const newContext = browser.newContext.bind(browser);
   browser.newContext = async (...args) => {
     const context = await newContext(...args);
     context.setDefaultNavigationTimeout(LIVENESS_MS);
-    context.on('page', (page) => page.once('crash', () => {
-      const reason = `${engine}'s web content process crashed under ${page.url()}`;
-      console.error(`[harness] ${reason}`);
-      page.close({ reason }).catch(() => {});
-    }));
+    context.on('page', (page) => {
+      page.once('crash', () => {
+        const reason = `${engine}'s web content process crashed under ${page.url()}`;
+        console.error(`[harness] ${reason}`);
+        page.close({ reason }).catch(() => {});
+      });
+      reportStalledLoads(page);
+      guard(page);
+    });
     return context;
   };
-  return browser;
+  return guard(browser);
+}
+
+/** One of Playwright's channel objects: a browser, context, page, frame, request, response or handle. */
+const isChannel = (value) => value !== null && typeof value === 'object'
+  && typeof value._guid === 'string' && '_connection' in value;
+/**
+ * Whether `value` is one of Playwright's own objects, the only thing the disconnect guard wraps: a channel
+ * object, or a helper that holds one in its own `_` field (a locator or frame locator holds `_frame`; the
+ * keyboard, mouse and touchscreen hold `_page`; the clock holds `_browserContext`). Told by SHAPE, because
+ * the class names are the bundler's (`_Page`, `Keyboard2`). A value a call ANSWERS with — a Date, a RegExp,
+ * a URL, anything `evaluate` returns — is neither, and is left exactly as it came (measured 2026-10-23).
+ */
+const isPlaywright = (value) => isChannel(value)
+  || (value !== null && typeof value === 'object' && !Array.isArray(value)
+    && Object.keys(value).some((key) => key.startsWith('_') && isChannel(value[key])));
+
+/**
+ * Make every call on `browser`, and on anything it hands out, fail once the browser has disconnected.
+ * Returns the function that guards one object, for the pages the context hook meets first.
+ *
+ * WHY. WPE's `MiniBrowser` aborted on its own in the noble image (a page closed right after asking for the
+ * device list and then the camera, both pending — packages/cube-scanner/src/camera.ts, 2026-10-22) and a `context.newPage()` in flight then never settled — still
+ * pending minutes after the process had exited and `disconnected` had fired — while every timer in the
+ * suite went on waiting for it. So each call RACES the disconnect: in flight, it rejects the moment the
+ * browser goes; made after, it rejects at once. The message names the disconnect, so a test fails where
+ * the browser went and says so.
+ *
+ * WHAT IS GUARDED is Playwright's own objects and nothing else (`isPlaywright`): the browser, every one a
+ * guarded call returns or resolves to — directly, or as an element of an array (`page.$$`, `locator.all()`)
+ * — and a guarded object's own fields of that kind (`page.keyboard`, `page.mouse`). Data a call answers
+ * with is never touched. Names starting `_` are Playwright's internals and are left alone. A call that
+ * answers something other than a promise passes through, so `on`, `url()` and `locator()` behave as before.
+ */
+function raceDisconnect(browser, engine) {
+  let fail;
+  const gone = new Promise((_, reject) => { fail = reject; });
+  gone.catch(() => {}); // rejected for whoever races it; nobody else need handle it
+  let closing = false;
+  // A close the owner asked for is Playwright's own clean path, which settles its calls itself and makes
+  // guarded calls of its own while it shuts down; failing those would turn an orderly close into errors.
+  browser.on('disconnected', () => {
+    if (closing) return;
+    const why = `${engine} disconnected — its browser process is gone`;
+    console.error(`[harness] ${why}`);
+    fail(new Error(`${why}, so this call cannot be answered`));
+  });
+
+  const guarded = new WeakSet();
+  // The method names a prototype chain offers, found once per chain: a suite makes thousands of locators,
+  // and walking every chain for each cost about 0.1 ms a locator.
+  const chainMethods = new WeakMap();
+  const methodsOf = (proto) => {
+    if (!proto || proto === Object.prototype) return [];
+    let names = chainMethods.get(proto);
+    if (!names) {
+      names = [...new Set([
+        ...Object.getOwnPropertyNames(proto).filter((name) => {
+          const d = Object.getOwnPropertyDescriptor(proto, name);
+          return name !== 'constructor' && !name.startsWith('_') && typeof d.value === 'function';
+        }),
+        ...methodsOf(Object.getPrototypeOf(proto)),
+      ])];
+      chainMethods.set(proto, names);
+    }
+    return names;
+  };
+  const wrap = (target, name, call) => {
+    target[name] = function guardedCall(...args) {
+      const answer = call.apply(this, args);
+      if (!answer || typeof answer.then !== 'function') return guard(answer);
+      answer.catch(() => {}); // the race below hands its failure on; this copy must not be unhandled
+      return Promise.race([answer.then(guard), gone]);
+    };
+  };
+  const guard = (target) => {
+    if (Array.isArray(target)) {
+      for (const item of target) guard(item);
+      return target;
+    }
+    if (!isPlaywright(target) || guarded.has(target)) return target;
+    guarded.add(target);
+    const own = Object.getOwnPropertyNames(target).filter((name) => !name.startsWith('_'));
+    for (const name of own) {
+      const d = Object.getOwnPropertyDescriptor(target, name);
+      if (!('value' in d)) continue; // a getter is read as it is
+      if (typeof d.value === 'function') wrap(target, name, d.value);
+      else if (isPlaywright(d.value)) guard(d.value);
+    }
+    for (const name of methodsOf(Object.getPrototypeOf(target))) {
+      if (!Object.hasOwn(target, name)) wrap(target, name, target[name]);
+    }
+    return target;
+  };
+
+  const close = browser.close.bind(browser);
+  browser.close = (...args) => { closing = true; return close(...args); };
+  return guard;
 }
 
 /**

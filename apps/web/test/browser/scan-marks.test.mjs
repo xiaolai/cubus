@@ -23,6 +23,7 @@ import { after, before, test } from 'node:test';
 
 import { decodePng } from '../png.mjs';
 import { LIVENESS_MS, startBrowserFixture } from './harness.mjs';
+import { cameraSettled } from './fake-scan.mjs';
 
 let fixture;
 before(async () => { fixture = await startBrowserFixture(); });
@@ -35,10 +36,13 @@ const SCANNED_CUBE = 'DDDUURFDURDRRRLBBULLFUFFFLLDUUFDDDLRBBUBLRBULFFLFBRBBR';
 const captureOf = (f) => ({ face: f, colors: [...SCANNED_CUBE.slice(FACES.indexOf(f) * 9, FACES.indexOf(f) * 9 + 9)].map((l) => FACES.indexOf(l)), by: 'centre' });
 
 /** A scan report, as the scanner emits it: the host's own painter lays the screen out from it. */
-const report = (page, detail) => page.evaluate((d) => document.querySelector('ai-scan-panel').dispatchEvent(new CustomEvent('scan-progress', { detail: d })), {
-  phase: 'scanning', message: '', captured: [], sides: 0, live: null, settling: null, seen: null, shownAgain: false,
-  device: null, confirm: null, identity: null, complete: false, suspects: [], notice: null, ...detail,
-});
+const report = async (page, detail) => {
+  await cameraSettled(page); // the panel's own refusal report would otherwise paint over this one (fake-scan.mjs)
+  await page.evaluate((d) => document.querySelector('ai-scan-panel').dispatchEvent(new CustomEvent('scan-progress', { detail: d })), {
+    phase: 'scanning', message: '', captured: [], sides: 0, live: null, settling: null, seen: null, shownAgain: false,
+    device: null, confirm: null, identity: null, complete: false, suspects: [], notice: null, ...detail,
+  });
+};
 
 /** The theme, set as Settings sets it, with every transition and animation held still so a colour is read as it stands. */
 const inTheme = (page, theme) => page.evaluate((th) => {
