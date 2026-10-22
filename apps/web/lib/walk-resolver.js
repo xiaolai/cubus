@@ -101,11 +101,12 @@ export function createWalkResolver({
       try {
         await deriveCube({
           signal: abort.signal,
-          // NO `onImprovement`: THE COUNT LANDS WITH THE LIST (verify pass, 2026-10-22). Each improvement used
-          // to be written into the count as it was found — but `refine` yields its first answer and then asks
-          // for a shorter one at the bonus budget, so after a scan Home said "20" beside an empty move list for
-          // 20–80 ms, a count for a walk that was not on screen. The count is the walk's, said by `labelWalk`
-          // in the same task that draws the list (screen-swap.test.mjs, "Home after a scan").
+          // NO IMPROVEMENTS: THE COUNT LANDS WITH THE LIST (verify pass, 2026-10-22). Each improvement used to
+          // be written into the count as it was found — but `refine` yields its first answer and then asks for a
+          // shorter one at the bonus budget, so after a scan Home said "20" beside an empty move list for 20–80
+          // ms, a count for a walk that was not on screen. `deriveCube` reports none now; the count is the
+          // walk's, said by `labelWalk` in the same task that draws the list (screen-swap.test.mjs, "Home after a
+          // scan").
           //
           // An escalation is the search doubling its budget, which from outside is "working…" that has
           // stood for seconds — so it says, in the smallest words available, that it is

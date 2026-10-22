@@ -353,11 +353,10 @@ const answersTier = (solvedFor, tier) => solvedFor === ANY_TIER || solvedFor ===
  *
  * The tier is a solution LENGTH, not an effort — "twenty moves or fewer" is a thing a person can
  * hold. Under 20 is reached on every cube and costs ~6 ms, so the default rung is invisible; the
- * tighter ones take seconds, which is why the search runs in a worker and reports each
- * improvement as it finds one rather than making anyone wait for the last.
- *
- * `onImprovement` is called with every strictly shorter answer, so a screen can show 21 becoming
- * 20 becoming 19 instead of a spinner. The promise resolves with the final one.
+ * tighter ones take seconds, which is why the search runs in a worker. The promise resolves with the
+ * final answer, and nothing is reported before it: a count said before its walk is on screen stood
+ * beside an empty move list (verify pass, 2026-10-22), so the walk's count is the screen's to say
+ * when it draws the list.
  *
  * `signal` stops a search whose subject has been replaced. A cancelled search is SUPERSEDED, not
  * failed: it throws an AbortError, which callers recognise and say nothing about — the walk that
@@ -391,15 +390,14 @@ function heldAnswer(c, tier) {
  * computation the device repeats. `commitAnswer` still applies it through the cubejs oracle, so a library
  * entry gets the same refutation every searched answer gets; what it skips is the search, not the check.
  */
-function provenMinimum(c, onImprovement) {
+function provenMinimum(c) {
   const proven = provenAnswer(challenges, c.facelets);
   if (!proven) return null;
   const solution = commitAnswer(c, proven.alg, { key: 'solve.provenMinimum', moves: proven.moves }, ANY_TIER);
-  onImprovement?.({ alg: proven.alg, moves: proven.moves, target: null, met: true, stopped: 'met' });
   return solution;
 }
 
-async function solve({ onImprovement, onProgress, signal } = {}) {
+async function solve({ onProgress, signal } = {}) {
   if (signal?.aborted) throw aborted();
   const c = state.cube;
   // There used to be a "the setup alg is stale — recompute now" line here, which called back into
@@ -413,7 +411,7 @@ async function solve({ onImprovement, onProgress, signal } = {}) {
   // answer proved offline, and then the search.
   const held = heldAnswer(c, tier);
   if (held) return held;
-  const proven = provenMinimum(c, onImprovement);
+  const proven = provenMinimum(c);
   if (proven) return proven;
 
   const client = solverWorker();
@@ -445,7 +443,6 @@ async function solve({ onImprovement, onProgress, signal } = {}) {
     })) {
       result = step;
       if (superseded()) throw aborted();
-      onImprovement?.(step);
     }
   } catch (err) {
     // No request follows the last attempt the first search is allowed, so the guard above never
