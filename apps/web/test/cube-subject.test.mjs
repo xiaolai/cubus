@@ -111,6 +111,27 @@ test('a subject replaced during the last attempt its first search is allowed is 
   });
 });
 
+// The same hole one search later: the first answer is in, the search for a SHORTER one is the last
+// thing asked, and the subject is replaced while it runs. It finds nothing, so the descent ends with no
+// request after it — only the check once the descent ends sees the change. Without it the first
+// answer went to `finishSolve` against the NEW cube and failed as "solver cross-check failed — re-scan",
+// shown on a live cube as "the answer did not check out — read the cube again" (verify pass, 2026-10-22).
+test('a subject replaced during the search for a shorter answer is superseded, and its answer is not committed', async () => {
+  const { state, subject } = await app();
+  subject.setFacelets(move(SOLVED, 'R U'));
+  await withAnswers((f, b, n) => {
+    if (n === 1) return "U' R'";
+    subject.ingestFacelets(move(SOLVED, 'F2 L'));
+    return null;
+  }, async (asked) => {
+    const err = await subject.deriveCube({}).catch((e) => e);
+    assert.equal(asked.length, 2, 'precondition: the search for a shorter answer was the last thing asked');
+    assert.equal(err?.name, 'AbortError', `a subject replaced during the search for a shorter answer failed as "${err?.message}"`);
+  });
+  assert.equal(state.cube.facelets, move(SOLVED, 'F2 L'), 'the replacement is not the subject');
+  assert.notEqual(state.cube.solution, "U' R'", 'the replaced cube\'s answer was committed to its replacement');
+});
+
 test('a carried answer stands for the twenty tier only, and a tighter tier searches', async () => {
   const { state, subject, svc } = await app();
   const { settings } = await import('../lib/app-settings.js');
