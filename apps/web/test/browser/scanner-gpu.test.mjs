@@ -21,7 +21,7 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { after, before, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { chromium } from 'playwright';
+import { launchBrowser } from './harness.mjs';
 
 import { freePort } from '../free-port.mjs';
 
@@ -119,7 +119,7 @@ async function withBrowser(fn, args) {
   // avoid. Still bounded at one attempt: a navigation that genuinely cannot complete reproduces.
   const crashed = (e) => /Target crashed|Target page, context or browser has been closed|browserType\.launch|net::ERR_ABORTED/.test(String(e?.message ?? e));
   for (let attempt = 0; ; attempt++) {
-    const browser = await chromium.launch({
+    const browser = await launchBrowser('chromium', {
       headless: false,
       args: args ?? ['--enable-unsafe-webgpu', '--ignore-gpu-blocklist'],
     });

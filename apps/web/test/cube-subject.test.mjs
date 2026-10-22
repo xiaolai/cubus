@@ -66,14 +66,12 @@ test('a refuted answer leaves no verdict behind', async () => {
 test('a subject replaced mid-search is superseded: nothing more is shown or searched for it', async () => {
   const { subject } = await app();
   subject.setFacelets(move(SOLVED, 'R U'));
-  const shown = [];
   await withAnswers((f, b, n) => {
     if (n === 1) subject.ingestFacelets(move(SOLVED, 'F2 L'));
     return b.solLen > 2 ? "U' R'" : null;
   }, async (asked) => {
-    const err = await subject.deriveCube({ onImprovement: (s) => shown.push(s.moves) }).catch((e) => e);
+    const err = await subject.deriveCube({}).catch((e) => e);
     assert.equal(err?.name, 'AbortError', `a replaced subject failed as "${err?.message}"`);
-    assert.deepEqual(shown, [], 'an answer about the previous cube reached the screen');
     assert.equal(asked.length, 1, 'the search went on for a cube that was no longer the subject');
   });
 });
@@ -111,6 +109,27 @@ test('a subject replaced during the last attempt its first search is allowed is 
     assert.equal(asked.length, attempts, 'precondition: every attempt the first search is allowed was asked');
     assert.equal(err?.name, 'AbortError', `a subject replaced during the last attempt failed as "${err?.message}"`);
   });
+});
+
+// The same hole one search later: the first answer is in, the search for a SHORTER one is the last
+// thing asked, and the subject is replaced while it runs. It finds nothing, so the descent ends with no
+// request after it — only the check once the descent ends sees the change. Without it the first
+// answer went to `finishSolve` against the NEW cube and failed as "solver cross-check failed — re-scan",
+// shown on a live cube as "the answer did not check out — read the cube again" (verify pass, 2026-10-22).
+test('a subject replaced during the search for a shorter answer is superseded, and its answer is not committed', async () => {
+  const { state, subject } = await app();
+  subject.setFacelets(move(SOLVED, 'R U'));
+  await withAnswers((f, b, n) => {
+    if (n === 1) return "U' R'";
+    subject.ingestFacelets(move(SOLVED, 'F2 L'));
+    return null;
+  }, async (asked) => {
+    const err = await subject.deriveCube({}).catch((e) => e);
+    assert.equal(asked.length, 2, 'precondition: the search for a shorter answer was the last thing asked');
+    assert.equal(err?.name, 'AbortError', `a subject replaced during the search for a shorter answer failed as "${err?.message}"`);
+  });
+  assert.equal(state.cube.facelets, move(SOLVED, 'F2 L'), 'the replacement is not the subject');
+  assert.notEqual(state.cube.solution, "U' R'", 'the replaced cube\'s answer was committed to its replacement');
 });
 
 test('a carried answer stands for the twenty tier only, and a tighter tier searches', async () => {

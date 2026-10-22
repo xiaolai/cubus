@@ -20,7 +20,7 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { after, before, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { webkit } from 'playwright';
+import { launchBrowser } from './harness.mjs';
 
 import { readFileSync } from 'node:fs';
 
@@ -55,7 +55,7 @@ before(async () => {
     proc.on('error', reject);
   });
   try {
-    browser = await webkit.launch();
+    browser = await launchBrowser('webkit');
   } catch (cause) {
     throw new Error('WebKit for Playwright is not installed — run: pnpm --filter cubus-web exec playwright install webkit', { cause });
   }
@@ -159,10 +159,14 @@ test('the repair race\'s method source does not search on the UI thread either',
   const { page, context, errors } = await openHome('quick');
   try {
     await page.click('#randCube');
-    await page.waitForFunction(() => /^\d+$/.test(document.querySelector('#moveCount')?.textContent ?? ''));
+    // The press's walk, listed, with the die let go — not its count, which can stand before the list.
+    await page.waitForFunction(() => /^\d+$/.test(document.querySelector('#moveCount')?.textContent ?? '')
+      && document.querySelectorAll('#solList .chip-m').length > 0 && document.querySelector('#randCube')?.disabled === false);
     await page.click('[data-stage="two-layers"]');
+    // The route's sentence, which only this press's race writes. No sleep after it: every source of the
+    // race is STARTED when the race begins (lib/stage-route.js), the method source's call included, so a
+    // search it made on this thread has already been counted by the time the route is said.
     await page.waitForFunction(() => /way back|couldn’t/.test(document.querySelector('#moveCount')?.textContent ?? ''));
-    await page.waitForTimeout(1500);
     const s = await searches(page);
     assert.ok(s.spies >= 1, 'the spy never installed, so it proved nothing');
     assert.equal(s.calls, 0, `the repair race searched ${s.calls} time(s) on the UI thread`);

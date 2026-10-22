@@ -88,6 +88,14 @@ async function openRoute(engine, route, viewport = VIEWPORTS[0]) {
  */
 async function walkStops(page, engine) {
   const vp = page.viewportSize();
+  // THE SETTLE BELOW HOLDS ONLY WHILE NOTHING SCROLLS SMOOTHLY. A box the same in two frames means the reveal is done when
+  // the engine scrolls in one step; a smooth scroll moves a few pixels a frame and can match two frames mid-flight (the
+  // verify pass, 2026-10-22: with `scroll-behavior: smooth` on every element the settle returned early on 20 of 21 moving
+  // stops). The app sets none today, so one appearing fails here rather than quietly cutting clips again.
+  const smooth = await page.evaluate(() => [document.documentElement, ...document.querySelectorAll('*')]
+    .filter((el) => getComputedStyle(el).scrollBehavior === 'smooth')
+    .map((el) => (el.id ? `#${el.id}` : `${el.tagName.toLowerCase()}.${[...el.classList].join('.')}`)).slice(0, 5));
+  assert.deepEqual(smooth, [], 'an element scrolls smoothly, so a box steady for one frame may still be moving — the settle in walkStops cannot be trusted');
   const stops = [];
   await page.evaluate(() => { document.activeElement?.blur?.(); });
   const seen = new Set();
@@ -96,6 +104,16 @@ async function walkStops(page, engine) {
     // WebKit on macOS skips buttons and links on Tab (the system's keyboard-navigation default) and reaches every control
     // on Option+Tab; WebKitGTK and Chromium reach them on Tab.
     await page.keyboard.press(engine === 'webkit' && process.platform === 'darwin' ? 'Alt+Tab' : 'Tab');
+    // THE STOP WHERE THE ENGINE LEAVES IT, not where focus found it. WebKit scrolls a control the keyboard focused into
+    // view at its next rendering update, not inside the key press, so a read straight after the press can see the box
+    // from before that scroll. The clip below was then cut from where the control had been: Settings' "Fewer clean
+    // reps" read at y 648.9, was drawn at 619.9 once the column scrolled 29px, and the clip held only the foot of its ring
+    // — 103–114 pixels against a 156px perimeter, on a fast run only (CI 39720111362; reproduced on WebKitGTK with DejaVu,
+    // where the column's scroll event landed 32ms after the read). So the box is read once it is the same in two frames.
+    await page.waitForFunction(() => new Promise((done) => {
+      const box = () => { const b = document.activeElement?.getBoundingClientRect(); return b ? `${b.x},${b.y},${b.width},${b.height}` : ''; };
+      requestAnimationFrame(() => { const at = box(); requestAnimationFrame(() => done(box() === at)); });
+    }), null, { timeout: LIVENESS_MS });
     const f = await page.evaluate(focused);
     if (!f) continue;
     if (seen.has(f.key)) break;

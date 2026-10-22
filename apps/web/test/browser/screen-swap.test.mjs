@@ -37,11 +37,11 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { after, before, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { webkit } from 'playwright';
 
 import { pace } from '../browser-wait.mjs';
 import { freePort } from '../free-port.mjs';
-import { LIVENESS_MS } from './harness.mjs';
+import { CONTRACT_CUBES } from '../fixtures/solver-cubes.mjs';
+import { launchBrowser, LIVENESS_MS } from './harness.mjs';
 
 // Asked of the OS in before(), not chosen: a fixed port collides with an orphaned server
 // from an interrupted run, which fails at startup and reads like a regression. See free-port.mjs.
@@ -75,7 +75,7 @@ before(async () => {
     proc.on('error', reject);
   });
   try {
-    browser = await webkit.launch();
+    browser = await launchBrowser('webkit');
   } catch (cause) {
     throw new Error('WebKit for Playwright is not installed — run: pnpm --filter cubus-web exec playwright install webkit', { cause });
   }
@@ -128,26 +128,34 @@ async function openHome({ solveTier = 'twenty' } = {}) {
   return { page, context, errors };
 }
 
+/** The scramble the walk on screen is drawn from: the walk's identity. Pressing Random always draws a
+ *  different state (uniformly, from 4.3e19), so a different scramble IS a different walk. */
+const SCRAMBLE_NOW = `document.querySelector('#viewCube cubus-cube')?.getAttribute('scramble') ?? null`;
+const scrambleNow = (page) => page.evaluate(SCRAMBLE_NOW);
+
+/**
+ * Wait until a press of the die is over: a walk drawn from a scramble other than `prev`, its list on the
+ * screen, and the die let go. Every part becomes true BECAUSE of the press — the die is held from before
+ * the roll until the walk it loads is on screen (lib/screens/cube/die.js), so a released die with a new
+ * scramble is the end of everything the press does on this thread.
+ *
+ * WAIT FOR THE CHANGE, NOT FOR A CONDITION ALREADY TRUE (found by the full gate, 2026-09-25, and again
+ * by a verify pass, 2026-10-22). Move chips alone are already on the screen after the first press, so
+ * a wait on them returned before the new cube had landed and a sleep did the real waiting: under a
+ * loaded gate the sleep lost, and a press made while the die was still held did nothing at all.
+ */
+const pressLanded = (page, prev) => page.waitForFunction((was) => {
+  const el = document.querySelector('#viewCube cubus-cube');
+  const die = document.querySelector('#randCube');
+  return el !== null && el.getAttribute('scramble') !== was
+    && document.querySelectorAll('#solList .chip-m').length > 0 && die !== null && !die.disabled;
+}, prev);
+
 /** Press the die and settle on the screen it produces. */
 async function press(page) {
-  // WAIT FOR THE CHANGE, NOT FOR A CONDITION ALREADY TRUE (found by the full gate, 2026-09-25).
-  // This waited only for move chips to exist — and after the FIRST press they already do, so every
-  // later press returned immediately, before the new cube had landed. The retarget usually won that
-  // race and the suite passed; under a loaded gate it lost, and `pressing Random does not rebuild
-  // the screen` failed with the two scrambles identical, which reads as "the press did nothing"
-  // when in fact the assertion simply ran too early. Pressing Random always draws a different state
-  // (uniformly, from 4.3e19), so the scramble changing IS the signal that the press took effect.
-  const scramble = () =>
-    page.evaluate(() => document.querySelector('#viewCube cubus-cube')?.getAttribute('scramble') ?? null);
-  const before = await scramble();
+  const before = await scrambleNow(page);
   await page.click('#randCube');
-  await page.waitForFunction(
-    (prev) => {
-      const el = document.querySelector('#viewCube cubus-cube');
-      return document.querySelectorAll('.chip-m').length > 0 && el !== null && el.getAttribute('scramble') !== prev;
-    },
-    before,
-  );
+  await pressLanded(page, before);
 }
 
 /** Press the tab for `id` and wait until the screen it asks for is on the paper.
@@ -173,6 +181,7 @@ async function navTo(page, id) {
  *  that frame paints. */
 const SAMPLER = `(() => {
   window.__frames = [];
+  window.__framesStop = false;
   const t0 = performance.now();
   const snap = () => {
     window.__frames.push({
@@ -182,10 +191,19 @@ const SAMPLER = `(() => {
       count: document.querySelector('#moveCount')?.textContent ?? null,
       cubes: document.querySelectorAll('#viewCube cubus-cube').length,
     });
-    if (performance.now() - t0 < 2000) requestAnimationFrame(snap);
+    if (!window.__framesStop) requestAnimationFrame(snap);
   };
   requestAnimationFrame(snap);
 })()`;
+
+/** Stop the sampler once `more` frames have been presented after the moment this is called, and hand
+ *  back every frame it saw. Counted from NOW, so the frames it waits for are frames after the event the
+ *  caller has just waited on — never a wall-clock window that a slow press can outrun. */
+async function framesAfter(page, more, key = '__frames', stop = '__framesStop') {
+  const now = await page.evaluate((k) => window[k].length, key);
+  await page.waitForFunction(([k, n]) => window[k].length >= n, [key, now + more]);
+  return page.evaluate(([k, s]) => { window[s] = true; return window[k]; }, [key, stop]);
+}
 
 test('no press runs a Kociemba search on the UI thread — at the press or after it', async () => {
   const { page, context, errors } = await openHome();
@@ -199,24 +217,23 @@ test('no press runs a Kociemba search on the UI thread — at the press or after
       const real = Cube.prototype.solve;
       Cube.prototype.solve = function (...a) { window.__searches += 1; return real.apply(this, a); };
     })()`);
+    // Counted from the first press on. A sleep here once waited out the scramble worker's own
+    // Kociemba tables, during which the app rolled on this thread; that worker is gone and a roll is
+    // a solve in the pool (lib/scramble-roll.js), so there is no warm-up for this claim to exclude.
     await press(page);
-    // The roller's Kociemba tables take 3-6s to build, and until they exist it is slower than
-    // this thread, so app.js deliberately rolls here in the meantime. The claim is about a warm
-    // app, which is every app a second after it opens; give it that second.
-    await page.waitForTimeout(9000);
-    await page.evaluate('window.__searches = 0');
 
     for (const nth of ['first', 'second', 'third']) {
-      const duringClick = await page.evaluate(`(() => {
+      const { duringClick, before } = await page.evaluate(`(() => {
+        const before = ${SCRAMBLE_NOW};
         document.querySelector('#randCube').click();
-        return window.__searches;
+        return { duringClick: window.__searches, before };
       })()`);
       assert.equal(duringClick, 0, `the ${nth} press searched ${duringClick} time(s) while the user waited — the cube should already have been rolled`);
-      await page.waitForFunction(() => document.querySelectorAll('.chip-m').length > 0, null);
-      await page.waitForTimeout(2500);
+      // The press's own walk, never the chips the last one left: each press is over before the next.
+      await pressLanded(page, before);
     }
     const total = await page.evaluate(() => window.__searches);
-    assert.equal(total, 0, `${total} Kociemba searches ran on the UI thread across three presses; rolling is the worker's job and solving is not needed at all`);
+    assert.equal(total, 0, `${total} Kociemba searches ran on the UI thread across four presses; rolling is the worker's job and solving is not needed at all`);
     assert.deepEqual(errors.map(String), [], 'the page threw');
   } finally {
     await context.close();
@@ -356,15 +373,14 @@ test('a re-used renderer arrives clean, and drives its new screen exactly once',
 test('no frame is ever presented with the solution card empty', async () => {
   const { page, context, errors } = await openHome();
   try {
-    await press(page); // settle: from here on the screen is already walking
-    await page.waitForTimeout(400);
+    await press(page); // from here on the screen is already walking, and the die is let go
 
     for (let i = 0; i < 3; i++) {
       await page.evaluate(SAMPLER);
       await press(page);
-      await page.waitForTimeout(600);
-      const frames = await page.evaluate(() => window.__frames);
-      assert.ok(frames.length > 8, `only ${frames.length} frames sampled — the press was not observed`);
+      // Frames after the walk landed, so a late change still has room to show.
+      const frames = await framesAfter(page, 30);
+      assert.ok(frames.length >= 30, `only ${frames.length} frames sampled — the press was not observed`);
 
       const empty = frames.filter((f) => f.solutionCard && f.chips === 0);
       assert.deepEqual(empty, [], 'a composited frame showed the solution card with no moves in it');
@@ -381,6 +397,174 @@ test('no frame is ever presented with the solution card empty', async () => {
     await context.close();
   }
 });
+
+// ---- Home after a scan: the count, the list and the cube's size land together ----------------
+//
+// THE SAME RULE AS THE DIE'S, for the path the die does not take. A scanned cube arrives with no
+// answer, so Home searches on the way in, and two things went on the paper before the walk did
+// (verify pass, 2026-10-22, reproduced at 575ac788 and cb2979dc):
+//
+//   - THE COUNT BEFORE THE LIST. `refine` yields its first answer (20) and goes on asking for a
+//     shorter one at the bonus budget; the resolver wrote each yield into `#moveCount`, so for
+//     20–80 ms the screen said "20" beside an empty move list.
+//   - A CUBE THAT SHRANK WHEN THE LIST LANDED. In portrait the move strip took no height until it
+//     had a chip, so the whole wait was drawn with a bigger cube (iPhone SE 304 → 220 px, the
+//     desktop portrait window 500 → 448) — the cube shrinking in front of the child.
+//
+// Recorded every frame from the navigation, the way SAMPLER is above. The canvas box is what the
+// renderer fits its picture to, and a resize clears it (the CI run that read the cube as 0 px), so
+// a box that changes IS a cube drawn at two sizes. A Restore stop and a Scramble roll wait in the
+// same `beginWalk`, so the page that has a scanned cube on Home holds them too, one phase each.
+const HOME_SCAN_FIXTURES = [
+  { name: 'iPhone SE', width: 375, height: 667, insets: '20,0,0,0', touch: true },
+  { name: 'desktop portrait window', width: 574, height: 817, insets: '0,0,0,0' },
+  { name: 'desktop landscape window', width: 840, height: 682, insets: '0,0,0,0' },
+];
+
+const WALK_FRAMES = `(() => {
+  window.__walkFrames = [];
+  window.__walkStop = false;
+  const t0 = performance.now();
+  const box = (el) => {
+    if (!el) return null;
+    const b = el.getBoundingClientRect();
+    return { w: b.width, h: b.height };
+  };
+  const snap = () => {
+    const screen = document.querySelector('.screen.active');
+    window.__walkFrames.push({
+      t: +(performance.now() - t0).toFixed(1) + 0,
+      screen: screen?.dataset.screen ?? null,
+      count: screen?.querySelector('#moveCount')?.textContent ?? null,
+      chips: screen ? screen.querySelectorAll('#solList .chip-m').length : 0,
+      slot: box(screen?.querySelector('#viewCube')),
+      canvas: box(screen?.querySelector('#viewCube canvas')),
+    });
+    if (!window.__walkStop) requestAnimationFrame(snap);
+  };
+  requestAnimationFrame(snap);
+})()`;
+
+/**
+ * HOW LONG A REQUEST TO THE APP'S WORKERS IS HELD while a phase below runs (`HOLD_WORKERS`). A Restore stop's route and a
+ * roll can answer inside the frame they were asked in, and then no frame ever shows the wait — so a phase passed with
+ * the waiting list's shape reverted (verify pass, 2026-10-22). Holding the requests is the test's own doing: the app
+ * is unchanged, and a request that lands late is one a slow machine sends anyway.
+ */
+const HOLD_MS = 400;
+const HOLD_WORKERS = () => {
+  window.__holdWorkerMs = 0;
+  const post = Worker.prototype.postMessage;
+  Worker.prototype.postMessage = function held(...args) {
+    const ms = window.__holdWorkerMs;
+    if (!ms) return post.apply(this, args);
+    setTimeout(() => post.apply(this, args), ms);
+    return undefined;
+  };
+};
+
+/**
+ * Every frame from `act` until `landed` says its walk is on screen, and 30 frames after, held to both MUST-NOTs: no
+ * count beside an empty list, and no cube at a size other than the one it settles at — and to having SHOWN the wait:
+ * at least one frame before the list, or the phase proves nothing about the frames it exists to check. The app's worker
+ * requests are held `HOLD_MS` while it runs, so every path waits on the paper.
+ */
+async function walkLandsWhole(page, fixture, { what, screen, act, landed }) {
+  await page.evaluate(WALK_FRAMES);
+  await page.evaluate((ms) => { window.__holdWorkerMs = ms; }, HOLD_MS);
+  await act();
+  await landed();
+  await page.evaluate(() => { window.__holdWorkerMs = 0; });
+  const frames = (await framesAfter(page, 30, '__walkFrames', '__walkStop')).filter((f) => f.screen === screen);
+  const where = `${fixture.name}, ${what}`;
+  assert.ok(frames.length >= 30, `${where}: only ${frames.length} frames sampled — the change was not observed`);
+  assert.ok(frames.some((f) => f.chips === 0),
+    `${where}: no frame before the list — the wait was never on the paper, so this phase checked nothing about it`);
+  const settled = frames.at(-1);
+  assert.ok(settled.slot && settled.canvas, `${where}: the settled frame has no cube`);
+  const sizeOff = (a, b) => !a || Math.abs(a.w - b.w) > 0.5 || Math.abs(a.h - b.h) > 0.5;
+  // Both MUST-NOTs in one comparison, so a failure shows every frame of each kind at once.
+  assert.deepEqual({
+    countWithoutList: frames.filter((f) => f.chips === 0 && /\d/.test(f.count ?? '')),
+    cubeAtAnotherSize: frames.filter((f) => sizeOff(f.slot, settled.slot) || sizeOff(f.canvas, settled.canvas)),
+  }, { countWithoutList: [], cubeAtAnotherSize: [] },
+  `${where}: a frame showed a move count beside an empty move list, or drew the cube at a size other than its`
+    + ` settled ${settled.canvas.w}×${settled.canvas.h}`);
+}
+
+/** The visible die: the twin's in landscape, the cube card's tool in portrait. */
+const DIE = '#randCube:visible, #randCubeTool:visible';
+
+/** Take the roll the app has waiting (lib/scramble-roll.js), through the app's own door, so the next roll is made on
+ *  demand — the path of a press that comes before the next roll is ready. Called inside a phase, once its requests are
+ *  held: the pre-roll that taking one starts is then held too, so it cannot be ready again before the press. */
+const takeWaitingRoll = (page) => page.evaluate(async () => { const m = await import('/lib/scramble-roll.js'); void m.randomScramble(); });
+
+for (const fixture of HOME_SCAN_FIXTURES) {
+  test(`a walk lands whole — count, list and the cube's size together — after a scan, a stop and a roll: ${fixture.name}`, async () => {
+    const context = await browser.newContext({ viewport: { width: fixture.width, height: fixture.height }, hasTouch: fixture.touch === true });
+    await context.addInitScript(HOLD_WORKERS);
+    const page = await context.newPage();
+    pace(page);
+    const errors = [];
+    page.on('pageerror', (e) => errors.push(e));
+    try {
+      await page.goto(`${BASE}/?insets=${fixture.insets}#/scan`);
+      await page.waitForSelector('.screen.active[data-screen="scan"] #stageCard', { state: 'attached' });
+      // CONTRACT_CUBES[0]: a frozen 20-move cube, so the search takes real time on every machine.
+      await page.evaluate((f) => {
+        document.querySelector('ai-scan-panel').dispatchEvent(new CustomEvent('scan-complete', {
+          detail: { facelets: f, rotations: [0, 0, 0, 0, 0, 0] },
+        }));
+      }, CONTRACT_CUBES[0]);
+      await page.waitForFunction(() => document.querySelector('#stageCard')?.hidden === false, null);
+
+      // HOME AFTER A SCAN, from the navigation: the walk's list, on the screen asked for — only this walk draws it.
+      await walkLandsWhole(page, fixture, {
+        what: 'Home after a scan', screen: 'home',
+        act: () => page.evaluate(() => { location.hash = '#/home'; }),
+        landed: () => page.waitForSelector('.screen.active[data-screen="home"] #solList .chip-m', { timeout: LIVENESS_MS }),
+      });
+
+      // A RESTORE STOP, pressed on the same screen: the first stop the row offers, which this cube has not reached. The
+      // walk it lands is a route, said in its own sentence — never the whole-cube count that stood before the press.
+      const said = await page.textContent('#moveCount');
+      const stop = await page.evaluate(() => [...document.querySelectorAll('#stageTargetRow [data-stage]')]
+        .find((el) => !el.hidden && el.dataset.stage !== 'solved')?.dataset.stage);
+      assert.ok(stop, `${fixture.name}: precondition — the Restore row offers a stop`);
+      await walkLandsWhole(page, fixture, {
+        what: `a walk to "${stop}"`, screen: 'home',
+        act: () => page.evaluate((id) => document.querySelector(`#stageTargetRow [data-stage="${id}"]`).click(), stop),
+        landed: () => page.waitForFunction(([id, was]) => {
+          const count = document.querySelector('#moveCount')?.textContent ?? '';
+          return document.querySelector(`#stageTargetRow [data-stage="${id}"]`)?.classList.contains('on')
+            && count !== was && count !== 'working…' && document.querySelectorAll('#solList .chip-m').length > 0;
+        }, [stop, said], { timeout: LIVENESS_MS }),
+      });
+
+      // SCRAMBLE, from its navigation: the screen rolls on the way in — on demand, its waiting roll taken first.
+      await walkLandsWhole(page, fixture, {
+        what: 'Scramble on the way in', screen: 'scramble',
+        act: async () => { await takeWaitingRoll(page); await page.evaluate(() => { location.hash = '#/scramble'; }); },
+        landed: () => page.waitForFunction(() => document.querySelector('.screen.active[data-screen="scramble"] #solList .chip-m')
+          && [...document.querySelectorAll('#randCube, #randCubeTool')].every((d) => !d.disabled), null, { timeout: LIVENESS_MS }),
+      });
+
+      // AND A ROLL OF ITS DIE: a different list, with the die let go — the die is held until the walk it loads is on screen.
+      const rolled = await page.textContent('#solList');
+      await walkLandsWhole(page, fixture, {
+        what: 'a roll on Scramble', screen: 'scramble',
+        act: async () => { await takeWaitingRoll(page); await page.click(DIE); },
+        landed: () => page.waitForFunction((was) => document.querySelector('#solList').textContent !== was
+          && document.querySelectorAll('#solList .chip-m').length > 0
+          && [...document.querySelectorAll('#randCube, #randCubeTool')].every((d) => !d.disabled), rolled, { timeout: LIVENESS_MS }),
+      });
+      assert.deepEqual(errors.map(String), [], 'the page threw');
+    } finally {
+      await context.close();
+    }
+  });
+}
 
 test('the renderer is never told to draw a SOLVED cube while the subject is a scrambled one', async () => {
   // The frame the initSolver removal could have created, and the reason `newCube` changed with it
@@ -436,6 +620,7 @@ test('the renderer is never told to draw a SOLVED cube while the subject is a sc
       };
       // The composited frames as well: same rAF discipline as SAMPLER above.
       window.__seen = [];
+      window.__seenStop = false;
       const t0 = performance.now();
       const snap = () => {
         const el = document.querySelector('#viewCube cubus-cube');
@@ -445,7 +630,7 @@ test('the renderer is never told to draw a SOLVED cube while the subject is a sc
           drawn: el ? el.getAttribute('facelets') : null,
           scramble: el ? el.getAttribute('scramble') : null,
         });
-        if (performance.now() - t0 < 4000) requestAnimationFrame(snap);
+        if (!window.__seenStop) requestAnimationFrame(snap);
       };
       requestAnimationFrame(snap);
     })()`);
@@ -461,9 +646,10 @@ test('the renderer is never told to draw a SOLVED cube while the subject is a sc
     })()`);
     await page.waitForFunction(() => document.querySelectorAll('.chip-m').length > 0, null);
     // Not a wait for the navigation: `cubusGo` onto the screen already showing re-renders inside the
-    // call, so the chips above are the new walk's. This keeps the frame sampler watching the frames
-    // after the walk lands, where a solved cube drawn late would show.
-    await page.waitForTimeout(600);
+    // call, and the solved cube Home opened on has no chips, so the chips above are the new walk's.
+    // Then frames AFTER the walk lands, counted from that moment, where a solved cube drawn late
+    // would show — never a wall-clock window, which a `shortest` search can outrun.
+    const seen = await framesAfter(page, 30, '__seen', '__seenStop');
 
     const SOLVED = 'UUUUUUUUURRRRRRRRRFFFFFFFFFDDDDDDDDDLLLLLLLLLBBBBBBBBB';
     const told = await page.evaluate(() => window.__told);
@@ -474,8 +660,7 @@ test('the renderer is never told to draw a SOLVED cube while the subject is a sc
       && ((a.name === 'scramble' && a.value === '') || (a.name === 'facelets' && a.value === SOLVED)));
     assert.deepEqual(lies, [], 'the renderer was told to draw a solved cube while the subject was scrambled');
 
-    const seen = await page.evaluate(() => window.__seen);
-    assert.ok(seen.length > 8, `only ${seen.length} frames sampled — the change of subject was not observed`);
+    assert.ok(seen.length >= 30, `only ${seen.length} frames sampled — the change of subject was not observed`);
     const lying = seen.filter((f) => f.subject !== SOLVED && (f.drawn === SOLVED || f.scramble === ''));
     assert.deepEqual(lying, [], 'a composited frame drew a solved cube while the subject was scrambled');
 
@@ -558,9 +743,12 @@ test('a refuted solution still blocks — the oracle can still say no', async ()
 
     await page.evaluate('window.cubusGo("home")'); // re-walk the same subject
     // Not a wait for the navigation: `cubusGo` onto the screen already showing re-renders inside the
-    // call. This is time for the re-walk to reach the oracle and refuse; landing late fails the
-    // sentence check below rather than passing it.
-    await page.waitForTimeout(2500);
+    // call, which puts the count at "working…". The wait is for the re-walk's VERDICT — the count
+    // leaving "working…" — whatever it says; the checks below say whether it is the refusal.
+    await page.waitForFunction(() => {
+      const count = document.querySelector('#moveCount')?.textContent ?? '';
+      return count !== '' && count !== 'working…' && count !== '—';
+    });
     const shown = await page.evaluate(() => ({
       count: document.querySelector('#moveCount')?.textContent ?? null,
       chips: document.querySelectorAll('.chip-m').length,
@@ -715,11 +903,15 @@ test('two presses in the same tick leave one cube, and it is the last one', asyn
   const { page, context, errors } = await openHome();
   try {
     await press(page);
-    await page.evaluate(() => {
+    const before = await page.evaluate(`(() => {
+      const before = ${SCRAMBLE_NOW};
       const die = document.querySelector('#randCube');
       die.click(); die.click(); die.click();
-    });
-    await page.waitForTimeout(3000);
+      return before;
+    })()`);
+    // The die is held from the first click until that press's walk is on screen, so the walk that
+    // lands with the die let go is the last one any of the three could start.
+    await pressLanded(page, before);
     const r = await page.evaluate(`(async () => {
       const Cube = (await import('/vendor/cubejs.js')).default;
       const SOLVED = 'UUUUUUUUURRRRRRRRRFFFFFFFFFDDDDDDDDDLLLLLLLLLBBBBBBBBB';

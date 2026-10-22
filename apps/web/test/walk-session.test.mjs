@@ -288,6 +288,34 @@ test('of two loads in flight, the one that started first and answers last writes
   assert.equal(w.$('#stepLbl').textContent, '0 / 1');
 });
 
+// THE COUNT LANDS WITH THE LIST, NEVER BEFORE IT (verify pass, 2026-10-22). `refine` yields its first answer
+// and then asks for a shorter one at the bonus budget; each yield was written into `#moveCount`, so Home said
+// "20" beside an empty move list for 20–80 ms after a scan. The browser suite records it frame by frame
+// (screen-swap.test.mjs, "Home after a scan"); this pins the mechanism: the search is handed no way to write
+// a count, and the waiting list already has the shape a walk's list has, so the cube's room does not change
+// when the turns arrive.
+test('while the whole-cube search runs, no count is written and the list keeps a walk\'s shape', async () => {
+  let whole = null;
+  const answer = deferred();
+  const w = world({}, ({ state }) => ({
+    deriveCube: (opts) => { whole = opts; return answer.promise.then(() => solvedBy(state, "R'")); },
+  }));
+  const loaded = w.session.load();
+  await settle();
+  assert.ok(whole, 'precondition: the whole-cube search was started');
+  assert.equal(whole.onImprovement, undefined,
+    'the search was handed a way to write its improvements into the count before the walk is on screen');
+  assert.equal(w.$('#moveCount').textContent, 'working…', 'the count said something other than "working…" while the search ran');
+  assert.deepEqual(w.chips(), [], 'precondition: no walk yet');
+  assert.ok(w.$('#solList > .walk-sec.whole > .move-chips'),
+    'the waiting list is not a whole walk\'s list with no turns in it, so its height changes when the turns land');
+
+  answer.resolve();
+  assert.equal(await within(loaded), true);
+  assert.deepEqual(w.chips(), ["R'"]);
+  assert.equal(w.$('#moveCount').textContent, '1', 'the count did not land with the list');
+});
+
 test('a stage repair that answers calls the whole-cube search off, and does not wait for it', async () => {
   let whole = null;
   const w = world({ subject: { facelets: turned('R U') } }, () => ({
@@ -314,8 +342,8 @@ test('a stage repair that answers calls the whole-cube search off, and does not 
 // a bad answer was the thing that sent the child to the wrong cube.
 //
 // Two assertions, and the second is the one with teeth: the load must FAIL, and the whole-cube
-// search must never have been started — not merely ignored. Started, its improvements write
-// straight into the count, so a child waiting for a picture watches numbers about solving instead.
+// search must never have been started — not merely ignored. Started, its escalation notices write
+// straight into the count, so a child waiting for a picture reads about solving instead.
 test('a picture route that is refused fails the walk — it never solves the cube instead', async () => {
   let wholeStarted = 0;
   const w = world({ subject: { facelets: turned('R U') } }, ({ state }) => ({
@@ -328,7 +356,7 @@ test('a picture route that is refused fails the walk — it never solves the cub
   assert.equal(loaded, false, 'a refused picture route committed a walk anyway');
   assert.deepEqual(w.chips(), [], 'a walk to somewhere the heading did not name reached the screen');
   assert.equal(wholeStarted, 0,
-    'the whole-cube search ran for a picture destination — its improvements report on solving');
+    'the whole-cube search ran for a picture destination — its notices report on solving');
   // The key reached the table rather than the generic fallback, which is what proves the refusal
   // travelled as its own failure instead of as "something went wrong". The real wording lives in
   // `screens/cube.js` and `stage-report`-style copy rules keep it about the SEARCH: every legal
@@ -1045,9 +1073,9 @@ test('once a repair is on screen, the abandoned whole-cube search no longer writ
   w.state.stageTarget = 'cross';
   assert.equal(await within(w.session.load()), true, 'precondition: the repair was committed');
   const count = w.$('#moveCount').textContent;
-  assert.ok(reports, 'precondition: the whole-cube search was given its two ways to report');
-  reports.onImprovement({ moves: 7 });
-  assert.equal(w.$('#moveCount').textContent, count, "the abandoned search wrote its move count over the repair's");
+  assert.ok(reports, 'precondition: the whole-cube search was given its way to report progress');
+  // It has no improvement to write at all (the count lands with the list); its progress is what is left.
+  assert.equal(reports.onImprovement, undefined, "the abandoned search was given a way to write a move count over the repair's");
   reports.onProgress({ attempt: 2 });
   assert.equal(w.$('#moveCount').textContent, count, "the abandoned search wrote its progress over the repair's count");
 });
@@ -1080,7 +1108,7 @@ test('a repair that fails calls the whole-cube search off, and that search write
   assert.equal(await within(w.session.load()), false, 'precondition: a repair that threw is not a walk');
   assert.equal(w.$('#moveCount').textContent, 'could not work it out', 'precondition: the failure is on screen');
   assert.ok(whole, 'precondition: the whole-cube search was started beside the repair');
-  whole.onImprovement({ moves: 7 });
+  assert.equal(whole.onImprovement, undefined, 'the search was given a way to write a move count over the failure');
   whole.onProgress({ attempt: 2 });
   assert.equal(w.$('#moveCount').textContent, 'could not work it out',
     'a search nobody is waiting for wrote its count over the failure');
