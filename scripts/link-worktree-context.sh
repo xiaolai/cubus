@@ -38,11 +38,11 @@ MAIN="$(cd "$common/.." && pwd -P)" || die "cannot resolve the main checkout fro
 
 [ -d "$1" ] || die "$1 is not a directory"
 TARGET="$(cd "$1" && pwd -P)" || die "cannot enter $1"
-[ "$TARGET" != "$MAIN" ] && [ "$(git -C "$TARGET" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" = "$common" ] \
-  && [ "$(git -C "$TARGET" rev-parse --show-toplevel 2>/dev/null)" = "$TARGET" ] || {
-  if [ "$TARGET" = "$MAIN" ]; then die "$TARGET is the main checkout itself; give a worktree of it"; fi
+if [ "$TARGET" = "$MAIN" ]; then die "$TARGET is the main checkout itself; give a worktree of it"; fi
+if [ "$(git -C "$TARGET" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" != "$common" ] \
+  || [ "$(git -C "$TARGET" rev-parse --show-toplevel 2>/dev/null)" != "$TARGET" ]; then
   die "$TARGET is not a worktree of $MAIN (or not its top level)"
-}
+fi
 
 MANIFEST="$MAIN/scripts/worktree-context.txt"
 [ -f "$MANIFEST" ] || die "no manifest at $MANIFEST"
