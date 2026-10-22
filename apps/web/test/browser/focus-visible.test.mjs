@@ -88,6 +88,14 @@ async function openRoute(engine, route, viewport = VIEWPORTS[0]) {
  */
 async function walkStops(page, engine) {
   const vp = page.viewportSize();
+  // THE SETTLE BELOW HOLDS ONLY WHILE NOTHING SCROLLS SMOOTHLY. A box the same in two frames means the reveal is done when
+  // the engine scrolls in one step; a smooth scroll moves a few pixels a frame and can match two frames mid-flight (the
+  // verify pass, 2026-10-22: with `scroll-behavior: smooth` on every element the settle returned early on 20 of 21 moving
+  // stops). The app sets none today, so one appearing fails here rather than quietly cutting clips again.
+  const smooth = await page.evaluate(() => [document.documentElement, ...document.querySelectorAll('*')]
+    .filter((el) => getComputedStyle(el).scrollBehavior === 'smooth')
+    .map((el) => (el.id ? `#${el.id}` : `${el.tagName.toLowerCase()}.${[...el.classList].join('.')}`)).slice(0, 5));
+  assert.deepEqual(smooth, [], 'an element scrolls smoothly, so a box steady for one frame may still be moving — the settle in walkStops cannot be trusted');
   const stops = [];
   await page.evaluate(() => { document.activeElement?.blur?.(); });
   const seen = new Set();
