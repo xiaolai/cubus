@@ -96,6 +96,16 @@ async function walkStops(page, engine) {
     // WebKit on macOS skips buttons and links on Tab (the system's keyboard-navigation default) and reaches every control
     // on Option+Tab; WebKitGTK and Chromium reach them on Tab.
     await page.keyboard.press(engine === 'webkit' && process.platform === 'darwin' ? 'Alt+Tab' : 'Tab');
+    // THE STOP WHERE THE ENGINE LEAVES IT, not where focus found it. WebKit scrolls a control the keyboard focused into
+    // view at its next rendering update, not inside the key press, so a read straight after the press can see the box
+    // from before that scroll. The clip below was then cut from where the control had been: Settings' "Fewer clean
+    // reps" read at y 648.9, was drawn at 619.9 once the column scrolled 29px, and the clip held only the foot of its ring
+    // — 103–114 pixels against a 156px perimeter, on a fast run only (CI 39720111362; reproduced on WebKitGTK with DejaVu,
+    // where the column's scroll event landed 32ms after the read). So the box is read once it is the same in two frames.
+    await page.waitForFunction(() => new Promise((done) => {
+      const box = () => { const b = document.activeElement?.getBoundingClientRect(); return b ? `${b.x},${b.y},${b.width},${b.height}` : ''; };
+      requestAnimationFrame(() => { const at = box(); requestAnimationFrame(() => done(box() === at)); });
+    }), null, { timeout: LIVENESS_MS });
     const f = await page.evaluate(focused);
     if (!f) continue;
     if (seen.has(f.key)) break;
