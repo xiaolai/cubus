@@ -21,9 +21,91 @@ const SERVE = fileURLToPath(new URL('../../serve.mjs', import.meta.url));
  */
 export const LIVENESS_MS = 180_000;
 
+/** The calls that wait for a page's `load`, each reported on when it times out. */
+const LOAD_WAITS = ['goto', 'reload', 'waitForLoadState'];
+/** How long the report may wait for the page to say its own state: the page may be the thing that is stuck. */
+const ASK_PAGE_MS = 2000;
+/** The most pending requests the report lists; the rest are counted. */
+const LISTED = 20;
+
+/**
+ * Make every wait for `load` on `page` that TIMES OUT say what the page was still waiting on.
+ *
+ * WHY. CI 39607667813 (2026-10-21): a WebKit `page.goto` of the scan screen waited the whole 180 s bound
+ * and said only `navigating to "…/#/scan", waiting until "load"`. That cannot tell apart the three things
+ * that hold `load` back — a document that never arrived, a request that was never answered or never
+ * finished, and a page with nothing in flight whose `load` was delayed some other way — so the occurrence
+ * was not a finding, and geometry.test.mjs had already met the same signature twice without one. The
+ * report names each request asked and not finished (answered or not, and how long after the wait began),
+ * the document's URL and `readyState`, and when DOMContentLoaded and `load` fired since the wait began.
+ *
+ * The error is the same object, still a `TimeoutError`, with the report added to its message and stack:
+ * a caller that tells a timeout by its name (geometry's `openAt`) sees no difference. Any other error, and
+ * every wait that succeeds, passes through untouched.
+ *
+ * Two things a reader of a WebKit report should know (measured 2026-10-22, macOS and Linux WPE):
+ * - On the app's pages, WebKit's Playwright raised no `requestfinished` for the top-level document even
+ *   when the page loaded, so the app's own URL listed "answered 200, body unfinished" is ordinary there;
+ *   `readyState` says whether the document arrived. (A plain test page's document did finish.)
+ * - WebKit hands a response to the page only once it has the bytes to sniff its type: an image answered
+ *   with 10 bytes of its body read as "no answer", with 600 as "answered". So "no answer" there means no
+ *   response reached the page, which includes one whose first few hundred bytes have not arrived.
+ */
+function reportStalledLoads(page) {
+  const pending = new Map();
+  page.on('request', (request) => pending.set(request, { asked: Date.now(), status: null }));
+  page.on('response', (response) => {
+    const entry = pending.get(response.request());
+    if (entry) entry.status = response.status();
+  });
+  page.on('requestfinished', (request) => pending.delete(request));
+  page.on('requestfailed', (request) => pending.delete(request));
+  const fired = { domcontentloaded: null, load: null };
+  page.on('domcontentloaded', () => { fired.domcontentloaded = Date.now(); });
+  page.on('load', () => { fired.load = Date.now(); });
+
+  const report = async (began) => {
+    const since = (at) => (at !== null && at >= began ? `after ${at - began} ms` : 'not since the wait began');
+    let timer;
+    const state = await Promise.race([
+      page.evaluate(() => ({ url: location.href, readyState: document.readyState }))
+        .then((s) => `the document ${s.url} is readyState "${s.readyState}"`, (e) => `the page could not say its state (${String(e?.message ?? e).split('\n')[0]})`),
+      new Promise((r) => { timer = setTimeout(() => r(`the page did not answer for its state within ${ASK_PAGE_MS} ms`), ASK_PAGE_MS); }),
+    ]).finally(() => clearTimeout(timer));
+    const open = [...pending.entries()].sort((a, b) => a[1].asked - b[1].asked);
+    const lines = open.slice(0, LISTED).map(([request, { asked, status }]) => {
+      const answer = status === null ? 'no answer' : `answered ${status}, body unfinished`;
+      const when = asked >= began ? `${asked - began} ms after` : `${began - asked} ms before`;
+      return `    ${request.method()} ${request.url()} (${request.resourceType()}): ${answer}, asked ${when} the wait began`;
+    });
+    if (open.length > LISTED) lines.push(`    … and ${open.length - LISTED} more`);
+    return [
+      `[harness] ${state}; DOMContentLoaded ${since(fired.domcontentloaded)}, load ${since(fired.load)}.`,
+      `[harness] ${open.length} request(s) still pending${open.length ? ':' : '.'}`,
+      ...lines,
+    ].join('\n');
+  };
+
+  for (const name of LOAD_WAITS) {
+    const wait = page[name].bind(page);
+    page[name] = async (...args) => {
+      const began = Date.now();
+      try {
+        return await wait(...args);
+      } catch (error) {
+        if (error?.name !== 'TimeoutError' || page.isClosed()) throw error;
+        const said = error.message;
+        error.message = `${said}\n${await report(began)}`;
+        if (typeof error.stack === 'string') error.stack = error.stack.replace(said, error.message);
+        throw error;
+      }
+    };
+  }
+}
+
 /**
  * Launch a browser for a test. EVERY browser a suite drives comes from here — `browser-launch.test.mjs`
- * refuses a direct `webkit.launch()` — because two guards hold only for a browser that has them:
+ * refuses a direct `webkit.launch()` — because three guards hold only for a browser that has them:
  *
  * - Every context gets the navigation bound, `newPage`'s own included — it makes its context through
  *   `newContext` — so no suite inherits the 30 s default by not thinking of it.
@@ -33,7 +115,10 @@ export const LIVENESS_MS = 180_000;
  *   after 20 s on macOS — a focus-visible run on Linux waited 35 minutes with no web process left.
  *   Closing the page rejects every call in flight on it, with the reason in its message, so the test
  *   fails where the page died and says so rather than waiting on a page that is gone. A browser that
- *   disconnects already rejects every call on its own connection.
+ *   is killed rejects every call on its own connection — but not every abort is a kill: a `newPage` in
+ *   flight when WPE's `MiniBrowser` aborted on its own never settled, `disconnected` notwithstanding
+ *   (noble image, 2026-10-22; dev-docs/agents-reference.md has the trigger).
+ * - A wait for `load` that times out says what the page was still waiting on (`reportStalledLoads`).
  *
  * @param {'webkit' | 'chromium'} engine
  * @param {import('playwright').LaunchOptions} [options]
@@ -47,11 +132,14 @@ export async function launchBrowser(engine, options = {}) {
   browser.newContext = async (...args) => {
     const context = await newContext(...args);
     context.setDefaultNavigationTimeout(LIVENESS_MS);
-    context.on('page', (page) => page.once('crash', () => {
-      const reason = `${engine}'s web content process crashed under ${page.url()}`;
-      console.error(`[harness] ${reason}`);
-      page.close({ reason }).catch(() => {});
-    }));
+    context.on('page', (page) => {
+      page.once('crash', () => {
+        const reason = `${engine}'s web content process crashed under ${page.url()}`;
+        console.error(`[harness] ${reason}`);
+        page.close({ reason }).catch(() => {});
+      });
+      reportStalledLoads(page);
+    });
     return context;
   };
   return browser;

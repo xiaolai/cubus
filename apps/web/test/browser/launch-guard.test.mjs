@@ -8,6 +8,7 @@
 // WebKit app share one name. What this holds is the guard's half: on `crash`, the page closes and
 // what was waiting on it rejects; with no crash, nothing is closed and nothing is cut short.
 import assert from 'node:assert/strict';
+import { createServer } from 'node:http';
 import { after, before, test } from 'node:test';
 
 import { launchBrowser } from './harness.mjs';
@@ -15,6 +16,85 @@ import { launchBrowser } from './harness.mjs';
 let browser;
 before(async () => { browser = await launchBrowser('webkit'); });
 after(async () => { await browser?.close(); });
+
+/**
+ * A server whose page never reaches `load`: `/never.png` is never answered and `/half.png` is answered
+ * and its body never ended, while `/done.js` completes — the shape of a navigation that waits on one
+ * stuck request among many that finished. Every held response is let go when the server closes.
+ */
+async function stallingServer() {
+  const server = createServer((req, res) => {
+    if (req.url === '/') {
+      res.writeHead(200, { 'content-type': 'text/html' });
+      res.end('<!doctype html><script src="/done.js"></script><img src="/never.png"><img src="/half.png">');
+    } else if (req.url === '/done.js') {
+      res.writeHead(200, { 'content-type': 'text/javascript', 'content-length': '0' });
+      res.end();
+    } else if (req.url === '/half.png') {
+      res.writeHead(200, { 'content-type': 'image/png', 'content-length': '1000' });
+      // 600 bytes, not a handful: WebKit gives the page no response until it has enough to sniff the
+      // type, and with 10 bytes this read as "no answer" (2026-10-22).
+      res.write(Buffer.alloc(600));
+    } else if (req.url === '/never.png') {
+      // Held: no status, no headers, no body.
+    } else {
+      res.writeHead(404).end();
+    }
+  });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  return {
+    base: `http://127.0.0.1:${server.address().port}`,
+    close: () => { server.closeAllConnections(); return new Promise((r) => server.close(r)); },
+  };
+}
+
+// CI 39607667813 (2026-10-21): a WebKit `page.goto` waited 180 s for a `load` that never came, and its
+// error said only "navigating to …, waiting until load" — nothing about what the page was waiting on, so
+// the occurrence could not be told from a document that never arrived, a request that never finished,
+// or a page with nothing in flight. The guard makes a navigation that times out SAY which.
+for (const [call, run] of [
+  ['page.goto', (page, base) => page.goto(`${base}/`, { timeout: 3000 })],
+  ['page.reload', async (page, base) => { await page.goto(`${base}/`, { waitUntil: 'commit' }); return page.reload({ timeout: 3000 }); }],
+  ['page.waitForLoadState', async (page, base) => { await page.goto(`${base}/`, { waitUntil: 'commit' }); return page.waitForLoadState('load', { timeout: 3000 }); }],
+]) {
+  test(`${call} that never reaches load fails naming the requests still pending, and the document's state`, async () => {
+    const server = await stallingServer();
+    const context = await browser.newContext();
+    try {
+      const page = await context.newPage();
+      const error = await run(page, server.base).then(() => null, (e) => e);
+      assert.ok(error, `${call} reached load on a page whose images are held`);
+      // Still the error a caller tells a timeout by: geometry's openAt retries on exactly this name.
+      assert.equal(error.name, 'TimeoutError', `the timeout came back as ${error.name}`);
+      const said = error.message;
+      assert.match(said, /still pending/, `no pending-request report:\n${said}`);
+      assert.match(said, /GET \S*\/never\.png \(image\): no answer/, `the unanswered request is not named:\n${said}`);
+      assert.match(said, /GET \S*\/half\.png \(image\): answered 200, body unfinished/, `the half-sent request is not named:\n${said}`);
+      assert.match(said, /readyState "interactive"/, `the document's state is not said:\n${said}`);
+      assert.match(said, /DOMContentLoaded after \d+ ms/, `DOMContentLoaded is not said:\n${said}`);
+      // What must NOT be in it: a request that finished is not a suspect.
+      assert.doesNotMatch(said, /done\.js/, `a request that finished is reported as pending:\n${said}`);
+      // The stack carries the report too, since a runner prints the stack, not the message.
+      assert.match(String(error.stack), /never\.png/, 'the report is in the message but not the stack');
+    } finally {
+      await context.close();
+      await server.close();
+    }
+  });
+}
+
+test('a navigation that reaches load is untouched: it answers its response, and reports nothing', async () => {
+  const server = await stallingServer();
+  const context = await browser.newContext();
+  try {
+    const page = await context.newPage();
+    const response = await page.goto(`${server.base}/done.js`);
+    assert.equal(response?.status(), 200);
+  } finally {
+    await context.close();
+    await server.close();
+  }
+});
 
 // A liveness bound on the guard itself: if the guard is gone, the call below never settles, and
 // this turns a hang of the very kind under test into a failure that says so.

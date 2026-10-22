@@ -303,7 +303,9 @@ async function openAt(fixture, url, prepare = async () => {}) {
       if (attempt > 1 || error?.name !== 'TimeoutError') throw error;
       const what = `${label(fixture)} ${new URL(url).hash}`;
       recovered.push(what);
-      console.error(`geometry: navigation to ${what} never reached load — retrying once in a fresh WebKit (recovery ${recovered.length})`);
+      // With the timeout's own message, which carries the harness's report of what the page was still
+      // waiting on: a recovered wedge is the one occurrence that would otherwise leave no finding.
+      console.error(`geometry: navigation to ${what} never reached load — retrying once in a fresh WebKit (recovery ${recovered.length})\n${error.message}`);
       await relaunchBrowser();
     }
   }
