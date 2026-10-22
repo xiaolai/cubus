@@ -421,8 +421,10 @@ async function solve({ onProgress, signal } = {}) {
   // makes it a clean refusal instead of a confusing one.)
   const searched = c.facelets;
   /** Replaced while this ran — by the caller's abort, or by a live report, which ingests without
-   *  cancelling anybody. Asked at every yield, so nothing more is shown or searched for a cube that
-   *  is no longer the subject: leaving the loop is what ends refine's searches. */
+   *  cancelling anybody. Asked before every request (below) and once the descent ends, which between
+   *  them leave no search asked for and no answer committed for a cube that is no longer the subject.
+   *  Asking at each yield as well added nothing: the next thing after a yield is a request or the end
+   *  (verify pass, 2026-10-22, deleting that check left every deriveCube case green). */
   const superseded = () => signal?.aborted || c.facelets !== searched;
   let result = null;
   try {
@@ -442,7 +444,6 @@ async function solve({ onProgress, signal } = {}) {
       start: c.solution || null,
     })) {
       result = step;
-      if (superseded()) throw aborted();
     }
   } catch (err) {
     // No request follows the last attempt the first search is allowed, so the guard above never
