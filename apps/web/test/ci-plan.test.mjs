@@ -290,6 +290,21 @@ test('the 62,208-state sweep has a job of its own, sized for what it costs', () 
   assert.match(sweep, /needs\.plan\.outputs\.full == 'true'/, 'the sweep is nightly, not per-push');
 });
 
+test('a browser download is bounded by a step timeout of its own, not by the tests behind it', () => {
+  // A slow package mirror once ate 29 of the ts job's 45 minutes and the browser suites were
+  // cancelled with nothing failed. Every step that installs browsers, in whichever job, carries a
+  // step-level bound well inside its job's, so a slow download fails as a download.
+  const steps = CI.split(/\n(?=      - )/)
+    .map((chunk) => chunk.split('\n').filter((line) => !/^\s*#/.test(line)).join('\n'))
+    .filter((step) => /playwright install/.test(step));
+  assert.ok(steps.length > 0, 'no step installs browsers, so this check went blind');
+  for (const step of steps) {
+    const minutes = Number(/^\s+timeout-minutes: (\d+)/m.exec(step)?.[1]);
+    assert.ok(minutes > 0 && minutes <= 15,
+      `a browser install step has no step timeout of 15 minutes or less:\n${step}`);
+  }
+});
+
 test('the triggers carry the three ways to ask for the full tier, and the plan sees the label', () => {
   const on = CI.slice(CI.indexOf('\non:\n'), CI.indexOf('\npermissions:'));
   assert.match(on, /^  schedule:\n    - cron: /m, 'no nightly schedule');

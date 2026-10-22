@@ -193,8 +193,14 @@ jobs:
       - uses: ./.github/actions/apt-ubuntu-only
         if: needs.plan.outputs.full == 'true' || needs.plan.outputs.icons == 'true'
 
+      # BOUNDED ON ITS OWN, because the job's 45 minutes are the browser suites' budget. The step
+      # takes ~3 minutes; on 2026-10-22 the Ubuntu mirror served its packages at 67.6 kB/s and it
+      # took 29, so the suites were cancelled 13 minutes in with nothing failed — a slow mirror read
+      # as a cancelled test run. Ten minutes is three times its usual cost; past that the run fails
+      # HERE, naming the download, and a re-run is the honest answer.
       - name: cubus-web — browser engines for the geometry and scanner suites
         if: needs.plan.outputs.full == 'true'
+        timeout-minutes: 10
         run: pnpm --filter cubus-web exec playwright install --with-deps webkit chromium
 
       # UNDER XVFB, because the scanner suite launches Chromium HEADED and a runner has no display.
@@ -271,6 +277,7 @@ jobs:
         run: pnpm install --frozen-lockfile
       - uses: ./.github/actions/apt-ubuntu-only
       - name: cubus-web — browser engines for the nightly suites
+        timeout-minutes: 10 # as in `ts`: a slow mirror fails here, not as a cancelled suite
         run: pnpm --filter cubus-web exec playwright install --with-deps webkit chromium
       - name: cubus-web — test:nightly (the browser suites too slow for every push)
         run: xvfb-run -a pnpm --filter cubus-web test:nightly
