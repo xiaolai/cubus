@@ -41,6 +41,7 @@ import { webkit } from 'playwright';
 
 import { pace } from '../browser-wait.mjs';
 import { freePort } from '../free-port.mjs';
+import { CONTRACT_CUBES } from '../fixtures/solver-cubes.mjs';
 import { LIVENESS_MS } from './harness.mjs';
 
 // Asked of the OS in before(), not chosen: a fixed port collides with an orphaned server
@@ -381,6 +382,102 @@ test('no frame is ever presented with the solution card empty', async () => {
     await context.close();
   }
 });
+
+// ---- Home after a scan: the count, the list and the cube's size land together ----------------
+//
+// THE SAME RULE AS THE DIE'S, for the path the die does not take. A scanned cube arrives with no
+// answer, so Home searches on the way in, and two things went on the paper before the walk did
+// (verify pass, 2026-10-22, reproduced at 575ac788 and cb2979dc):
+//
+//   - THE COUNT BEFORE THE LIST. `refine` yields its first answer (20) and goes on asking for a
+//     shorter one at the bonus budget; the resolver wrote each yield into `#moveCount`, so for
+//     20–80 ms the screen said "20" beside an empty move list.
+//   - A CUBE THAT SHRANK WHEN THE LIST LANDED. In portrait the move strip took no height until it
+//     had a chip, so the whole wait was drawn with a bigger cube (iPhone SE 304 → 220 px, the
+//     desktop portrait window 500 → 448) — the cube shrinking in front of the child.
+//
+// Recorded every frame from the navigation, the way SAMPLER is above. The canvas box is what the
+// renderer fits its picture to, and a resize clears it (the CI run that read the cube as 0 px), so
+// a box that changes IS a cube drawn at two sizes.
+const HOME_SCAN_FIXTURES = [
+  { name: 'iPhone SE', width: 375, height: 667, insets: '20,0,0,0', touch: true },
+  { name: 'desktop portrait window', width: 574, height: 817, insets: '0,0,0,0' },
+  { name: 'desktop landscape window', width: 840, height: 682, insets: '0,0,0,0' },
+];
+
+const HOME_FRAMES = `(() => {
+  window.__homeFrames = [];
+  window.__homeStop = false;
+  const t0 = performance.now();
+  const box = (el) => {
+    if (!el) return null;
+    const b = el.getBoundingClientRect();
+    return { w: b.width, h: b.height };
+  };
+  const snap = () => {
+    const home = document.querySelector('.screen.active[data-screen="home"]');
+    window.__homeFrames.push({
+      t: +(performance.now() - t0).toFixed(1) + 0,
+      home: Boolean(home),
+      count: home?.querySelector('#moveCount')?.textContent ?? null,
+      chips: home ? home.querySelectorAll('#solList .chip-m').length : 0,
+      slot: box(home?.querySelector('#viewCube')),
+      canvas: box(home?.querySelector('#viewCube canvas')),
+    });
+    if (!window.__homeStop) requestAnimationFrame(snap);
+  };
+  requestAnimationFrame(snap);
+})()`;
+
+for (const fixture of HOME_SCAN_FIXTURES) {
+  test(`Home after a scan: no frame shows the count without the list, or the cube at another size: ${fixture.name}`, async () => {
+    const context = await browser.newContext({ viewport: { width: fixture.width, height: fixture.height }, hasTouch: fixture.touch === true });
+    const page = await context.newPage();
+    pace(page);
+    const errors = [];
+    page.on('pageerror', (e) => errors.push(e));
+    try {
+      await page.goto(`${BASE}/?insets=${fixture.insets}#/scan`);
+      await page.waitForSelector('.screen.active[data-screen="scan"] #stageCard', { state: 'attached' });
+      // CONTRACT_CUBES[0]: a frozen 20-move cube, so the search takes real time on every machine.
+      await page.evaluate((f) => {
+        document.querySelector('ai-scan-panel').dispatchEvent(new CustomEvent('scan-complete', {
+          detail: { facelets: f, rotations: [0, 0, 0, 0, 0, 0] },
+        }));
+      }, CONTRACT_CUBES[0]);
+      await page.waitForFunction(() => document.querySelector('#stageCard')?.hidden === false, null);
+
+      await page.evaluate(HOME_FRAMES);
+      await page.evaluate(() => { location.hash = '#/home'; });
+      // The walk's list, on the screen asked for — only this walk draws it.
+      await page.waitForSelector('.screen.active[data-screen="home"] #solList .chip-m', { timeout: LIVENESS_MS });
+      // Then frames AFTER the list landed, counted from that moment, so a late change has room to show.
+      const landed = await page.evaluate(() => window.__homeFrames.length);
+      await page.waitForFunction((n) => window.__homeFrames.length >= n + 30, landed, { timeout: LIVENESS_MS });
+      const frames = await page.evaluate(() => { window.__homeStop = true; return window.__homeFrames; });
+
+      const onHome = frames.filter((f) => f.home);
+      assert.ok(onHome.length > 30, `${fixture.name}: only ${onHome.length} Home frames sampled — the navigation was not observed`);
+      // The search must have been waited out on screen, or this proves nothing about the wait.
+      const waited = onHome.filter((f) => f.chips === 0);
+      assert.ok(waited.length > 0, `${fixture.name}: no Home frame before the list — the walk was not searched for, so the wait was never on the paper`);
+
+      const settled = onHome.at(-1);
+      assert.ok(settled.slot && settled.canvas, `${fixture.name}: the settled Home frame has no cube`);
+      const sizeOff = (a, b) => !a || Math.abs(a.w - b.w) > 0.5 || Math.abs(a.h - b.h) > 0.5;
+      // Both MUST-NOTs in one comparison, so a failure shows every frame of each kind at once.
+      assert.deepEqual({
+        countWithoutList: onHome.filter((f) => f.chips === 0 && /\d/.test(f.count ?? '')),
+        cubeAtAnotherSize: onHome.filter((f) => sizeOff(f.slot, settled.slot) || sizeOff(f.canvas, settled.canvas)),
+      }, { countWithoutList: [], cubeAtAnotherSize: [] },
+      `${fixture.name}: a frame showed a move count beside an empty move list, or drew the cube at a size other than its`
+        + ` settled ${settled.canvas.w}×${settled.canvas.h}`);
+      assert.deepEqual(errors.map(String), [], 'the page threw');
+    } finally {
+      await context.close();
+    }
+  });
+}
 
 test('the renderer is never told to draw a SOLVED cube while the subject is a scrambled one', async () => {
   // The frame the initSolver removal could have created, and the reason `newCube` changed with it

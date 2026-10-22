@@ -90,7 +90,7 @@ export function createWalkResolver({
     // otherwise hand the search a live signal whose abort had already been and gone.
     if (signal.aborted) abort.abort();
     else signal.addEventListener('abort', () => abort.abort(), { once: true });
-    // Its reports belong on the count only while it is still wanted. An abandoned search once
+    // Its progress belongs on the count only while it is still wanted. An abandoned search once
     // turned "your cube is already at the two bottom layers" into "7" (found by the browser
     // suite), and one left running past a repair that failed wrote over the failure (found by
     // audit, 2026-09-13).
@@ -101,11 +101,14 @@ export function createWalkResolver({
       try {
         await deriveCube({
           signal: abort.signal,
-          // Each improvement lands on the count as it is found, so a tight tier shows 21 becoming
-          // 20 becoming 19 rather than nothing at all.
-          onImprovement: (step) => { if (heard()) setStatus(String(step.moves)); },
-          // An escalation is the search doubling its budget, which from outside is a count that has
-          // stopped moving for seconds — so it says, in the smallest words available, that it is
+          // NO `onImprovement`: THE COUNT LANDS WITH THE LIST (verify pass, 2026-10-22). Each improvement used
+          // to be written into the count as it was found — but `refine` yields its first answer and then asks
+          // for a shorter one at the bonus budget, so after a scan Home said "20" beside an empty move list for
+          // 20–80 ms, a count for a walk that was not on screen. The count is the walk's, said by `labelWalk`
+          // in the same task that draws the list (screen-swap.test.mjs, "Home after a scan").
+          //
+          // An escalation is the search doubling its budget, which from outside is "working…" that has
+          // stood for seconds — so it says, in the smallest words available, that it is
           // still going. `attempt` is 0-BASED (solve-target's contract): nothing is said for the
           // ordinary attempt 0, and from the first ESCALATION on it is shown one-based, because
           // "attempt 2" is what a person would call it. Never a percentage or a time — nothing here
@@ -199,9 +202,9 @@ export function createWalkResolver({
    *   Checkerboard. The route's own verifier catching a bad answer would have been the thing that sent
    *   the child to the wrong cube.
    *
-   *   AND THE SEARCH IT DOES NOT NEED IS NEVER STARTED. `startWholeSearch` writes its improvements
-   *   straight into the count, so a child waiting for a picture would watch numbers and escalation
-   *   notices about solving the cube instead. Not starting it is stronger than ignoring it, and it
+   *   AND THE SEARCH IT DOES NOT NEED IS NEVER STARTED. `startWholeSearch` writes its escalation
+   *   notices straight into the count, so a child waiting for a picture would read about solving the
+   *   cube instead. Not starting it is stronger than ignoring it, and it
    *   leaves the pool free for the search that IS wanted.
    *
    * A refusal throws rather than returning null: null here means "overtaken", and a refusal read as

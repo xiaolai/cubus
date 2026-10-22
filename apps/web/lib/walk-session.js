@@ -408,7 +408,11 @@ export function createWalkSession(screen, app) {
     // a piece on a cube that has just changed is worse than pointing at nothing.
     lesson = null;
     pointAtStep(0);
-    solList.innerHTML = '';
+    // A WHOLE WALK'S LIST WITH NO TURNS IN IT, never an empty one (verify pass, 2026-10-22). In portrait the move
+    // strip is one row of turns high because of what it holds (index.html, `.walk-strip`), so an empty strip took no
+    // height and the wait was drawn with a bigger cube that shrank when the turns landed — the iPhone SE's 304 px to
+    // 220. The same section and chip row a whole walk draws keep the strip that row high while it waits.
+    solList.innerHTML = '<div class="walk-sec whole"><div class="move-chips"></div></div>';
     // The previous walk's prove button must not survive into the gap: its closure guards
     // itself with fresh(), but a click would still flip it to "preparing…" and disable it
     // BEFORE those guards run — and if the new walk fails, nothing ever puts it back.

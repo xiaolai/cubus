@@ -326,7 +326,10 @@ test('a repair survives a whole-cube search that failed', () => {
   // "7" — found by the browser suite, which is the only place that could see it.
   assert.match(search, /const heard = \(\) => fresh\(\) && !abort\.signal\.aborted;/,
     'a search nobody is waiting for may not write the count of the thing that replaced it');
-  assert.match(search, /onImprovement: \(step\) => \{ if \(heard\(\)\) setStatus/, 'and its improvements ask');
+  assert.match(search, /onProgress: \(\{ attempt \}\) => \{\s*if \(heard\(\) && attempt >= 1\) setStatus/, 'and its progress asks');
+  // AND IT WRITES NO COUNT AT ALL: an improvement said before the walk is on screen is a count beside an empty
+  // move list (verify pass, 2026-10-22; walk-session.test.mjs pins the behaviour).
+  assert.doesNotMatch(search, /onImprovement\s*:/, 'the whole-cube search writes its improvements into the count');
   assert.match(search, /done\.catch\(\(\) => \{\}\);/,
     'and the promise nobody may be left to await must never be an unhandled rejection');
   // The race starts the search and is the only place that does, so it is the one that must call it off.
