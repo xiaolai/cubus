@@ -32,8 +32,6 @@ CLAUDE.md
 # AGENTS.md on 2026-10-22).
 apps/AGENTS.md
 apps/CLAUDE.md
-apps/desktop/src-tauri/AGENTS.md
-apps/desktop/src-tauri/CLAUDE.md
 apps/web/AGENTS.md
 apps/web/CLAUDE.md
 apps/web/bench/AGENTS.md
