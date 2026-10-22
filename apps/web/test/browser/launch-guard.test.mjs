@@ -135,3 +135,62 @@ for (const [made, open] of [
     assert.ok(said.some((s) => s.includes('crashed')), `the crash was not named: ${JSON.stringify(said)}`);
   });
 }
+
+// A browser that DISCONNECTS without being killed — WPE's MiniBrowser aborting on its own — left a
+// `context.newPage()` in flight pending for good, `disconnected` notwithstanding (noble image, 2026-10-22: the
+// call was still pending minutes after the process exited). A kill rejects every call; this abort did not. So
+// every call on anything the harness hands out races the browser's disconnect, and loses it by name. The event
+// is raised by hand, as `crash` is above: aborting a browser is not something a suite may do to its machine.
+test('a browser that disconnects fails every call in flight on what it handed out, and every call after, naming it', async () => {
+  const own = await launchBrowser('webkit');
+  try {
+    const context = await own.newContext();
+    const page = await context.newPage();
+    await page.setContent('<p id="x">a</p>');
+    const handle = await page.$('#x');
+    const never = () => new Promise(() => {});
+    const inFlight = {
+      'page.evaluate': page.evaluate(never),
+      'frame.evaluate': page.mainFrame().evaluate(never),
+      'locator.evaluate': page.locator('#x').evaluate(never),
+      'elementHandle.evaluate': handle.evaluate(never),
+      'page.waitForFunction': page.waitForFunction(() => false, null, { timeout: 0 }),
+      'locator.waitFor': page.locator('#never').waitFor({ timeout: 0 }),
+    };
+    const settled = new Set();
+    for (const [name, p] of Object.entries(inFlight)) { p.then(() => settled.add(name), () => settled.add(name)); }
+
+    // What must NOT happen first: with the browser connected, a frame passes and nothing has settled.
+    await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
+    assert.deepEqual([...settled], [], 'a call settled with the browser still connected');
+
+    const said = [];
+    const error = console.error;
+    console.error = (...args) => { said.push(args.join(' ')); };
+    try {
+      own.emit('disconnected', own);
+      let timer;
+      const bound = (p) => Promise.race([p, new Promise((r) => { timer = setTimeout(() => r('still pending'), STILL_PENDING_MS); })]).finally(() => clearTimeout(timer));
+      for (const [name, p] of Object.entries(inFlight)) {
+        const outcome = await bound(p.then(() => 'resolved', (e) => e));
+        assert.ok(outcome instanceof Error, `${name} in flight was ${outcome}, not rejected, after the browser disconnected`);
+        assert.match(outcome.message, /disconnected/, `${name} rejected without naming the disconnect: ${outcome.message}`);
+      }
+      for (const [name, call] of [
+        ['browser.newContext', () => own.newContext()],
+        ['context.newPage', () => context.newPage()],
+        ['page.goto', () => page.goto('about:blank')],
+        ['page.keyboard.press', () => page.keyboard.press('a')],
+      ]) {
+        const outcome = await bound(call().then(() => 'resolved', (e) => e));
+        assert.ok(outcome instanceof Error, `${name} made after the disconnect was ${outcome}, not rejected`);
+        assert.match(outcome.message, /disconnected/, `${name} after the disconnect did not name it: ${outcome.message}`);
+      }
+    } finally {
+      console.error = error;
+    }
+    assert.ok(said.some((s) => s.includes('disconnected')), `the disconnect was not said: ${JSON.stringify(said)}`);
+  } finally {
+    await own.close().catch(() => {});
+  }
+});

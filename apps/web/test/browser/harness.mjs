@@ -114,10 +114,11 @@ function reportStalledLoads(page) {
  *   `keyboard.press` takes no timeout, and with WebKit's content process killed it was still pending
  *   after 20 s on macOS — a focus-visible run on Linux waited 35 minutes with no web process left.
  *   Closing the page rejects every call in flight on it, with the reason in its message, so the test
- *   fails where the page died and says so rather than waiting on a page that is gone. A browser that
- *   is killed rejects every call on its own connection — but not every abort is a kill: a `newPage` in
- *   flight when WPE's `MiniBrowser` aborted on its own never settled, `disconnected` notwithstanding
- *   (noble image, 2026-10-22; dev-docs/agents-reference.md has the trigger).
+ *   fails where the page died and says so rather than waiting on a page that is gone.
+ * - A browser that DISCONNECTS fails every call in flight on anything it handed out, and every call
+ *   after, naming the disconnect (`raceDisconnect`). A browser that is killed rejects its calls itself,
+ *   but not every abort is a kill: a `newPage` in flight when WPE's `MiniBrowser` aborted on its own
+ *   never settled, `disconnected` notwithstanding (noble image, 2026-10-22).
  * - A wait for `load` that times out says what the page was still waiting on (`reportStalledLoads`).
  *
  * @param {'webkit' | 'chromium'} engine
@@ -128,6 +129,7 @@ export async function launchBrowser(engine, options = {}) {
   const engines = { webkit, chromium };
   if (!Object.hasOwn(engines, engine)) throw new Error(`launchBrowser: no engine "${engine}"`);
   const browser = await engines[engine].launch(options);
+  const guard = raceDisconnect(browser, engine);
   const newContext = browser.newContext.bind(browser);
   browser.newContext = async (...args) => {
     const context = await newContext(...args);
@@ -139,10 +141,95 @@ export async function launchBrowser(engine, options = {}) {
         page.close({ reason }).catch(() => {});
       });
       reportStalledLoads(page);
+      guard(page);
     });
     return context;
   };
-  return browser;
+  return guard(browser);
+}
+
+/** What a disconnect must not reach into: data a call answers with, not an object that makes calls. */
+const isData = (value) => Array.isArray(value) || ArrayBuffer.isView(value) || value instanceof Error
+  || value instanceof Promise || [Object.prototype, null].includes(Object.getPrototypeOf(value));
+
+/**
+ * Make every call on `browser`, and on anything it hands out, fail once the browser has disconnected.
+ * Returns the function that guards one object, for the pages the context hook meets first.
+ *
+ * WHY. WPE's `MiniBrowser` aborted on its own in the noble image (closing a context during the scan
+ * screen's camera request, 2026-10-22) and a `context.newPage()` in flight then never settled — still
+ * pending minutes after the process had exited and `disconnected` had fired — while every timer in the
+ * suite went on waiting for it. So each call RACES the disconnect: in flight, it rejects the moment the
+ * browser goes; made after, it rejects at once. The message names the disconnect, so a test fails where
+ * the browser went and says so.
+ *
+ * WHAT IS GUARDED is found by shape, because Playwright's class names are its bundler's (`_Page`,
+ * `Keyboard2`): the browser, every object a guarded method returns or resolves to that is a class instance
+ * rather than data (a context, page, frame, locator, element handle, response), and a guarded object's own
+ * fields of that kind (`page.keyboard`, `page.mouse`). Names starting `_` are Playwright's internals and
+ * are left alone. A call that answers something other than a promise passes through untouched, so `on`,
+ * `url()` and `locator()` behave as before.
+ */
+function raceDisconnect(browser, engine) {
+  let fail;
+  const gone = new Promise((_, reject) => { fail = reject; });
+  gone.catch(() => {}); // rejected for whoever races it; nobody else need handle it
+  let closing = false;
+  // A close the owner asked for is Playwright's own clean path, which settles its calls itself and makes
+  // guarded calls of its own while it shuts down; failing those would turn an orderly close into errors.
+  browser.on('disconnected', () => {
+    if (closing) return;
+    const why = `${engine} disconnected — its browser process is gone`;
+    console.error(`[harness] ${why}`);
+    fail(new Error(`${why}, so this call cannot be answered`));
+  });
+
+  const guarded = new WeakSet();
+  // The method names a prototype chain offers, found once per chain: a suite makes thousands of locators,
+  // and walking every chain for each cost about 0.1 ms a locator.
+  const chainMethods = new WeakMap();
+  const methodsOf = (proto) => {
+    if (!proto || proto === Object.prototype) return [];
+    let names = chainMethods.get(proto);
+    if (!names) {
+      names = [...new Set([
+        ...Object.getOwnPropertyNames(proto).filter((name) => {
+          const d = Object.getOwnPropertyDescriptor(proto, name);
+          return name !== 'constructor' && !name.startsWith('_') && typeof d.value === 'function';
+        }),
+        ...methodsOf(Object.getPrototypeOf(proto)),
+      ])];
+      chainMethods.set(proto, names);
+    }
+    return names;
+  };
+  const wrap = (target, name, call) => {
+    target[name] = function guardedCall(...args) {
+      const answer = call.apply(this, args);
+      if (!answer || typeof answer.then !== 'function') return guard(answer);
+      answer.catch(() => {}); // the race below hands its failure on; this copy must not be unhandled
+      return Promise.race([answer.then(guard), gone]);
+    };
+  };
+  const guard = (target) => {
+    if (target === null || typeof target !== 'object' || isData(target) || guarded.has(target)) return target;
+    guarded.add(target);
+    const own = Object.getOwnPropertyNames(target).filter((name) => !name.startsWith('_'));
+    for (const name of own) {
+      const d = Object.getOwnPropertyDescriptor(target, name);
+      if (!('value' in d)) continue; // a getter is read as it is
+      if (typeof d.value === 'function') wrap(target, name, d.value);
+      else guard(d.value);
+    }
+    for (const name of methodsOf(Object.getPrototypeOf(target))) {
+      if (!Object.hasOwn(target, name)) wrap(target, name, target[name]);
+    }
+    return target;
+  };
+
+  const close = browser.close.bind(browser);
+  browser.close = (...args) => { closing = true; return close(...args); };
+  return guard;
 }
 
 /**
