@@ -6,7 +6,7 @@
 // 2. NOTHING GOES AROUND IT. The gate is only a guarantee if every platform camera call takes its turn, so the
 //    package's source is parsed and every `mediaDevices` call must sit inside a function handed to `inTurn`.
 
-import { readdirSync, readFileSync } from 'node:fs';
+import { readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
@@ -120,18 +120,50 @@ describe('the camera gate is bounded', () => {
 
 const PACKAGE = fileURLToPath(new URL('..', import.meta.url));
 const SOURCE_DIRS = ['src', 'view'];
-/** Calls on `mediaDevices` that ask the platform nothing: listening for a device change is not a request. */
-const NOT_A_REQUEST = new Set(['addEventListener', 'removeEventListener', 'dispatchEvent']);
+/** The platform requests the gate exists for, by the symbol TypeScript resolves them to. */
+const GATED = new Set(['MediaDevices.getUserMedia', 'MediaDevices.enumerateDevices']);
+const config = ts.parseJsonConfigFileContent(
+  ts.readConfigFile(join(PACKAGE, 'tsconfig.json'), ts.sys.readFile).config,
+  ts.sys,
+  PACKAGE,
+);
+
+/** A program over `files`, with `virtual` files served from memory (the samples below), under the package's options. */
+function programOf(files: string[], virtual = new Map<string, string>()): ts.Program {
+  const host = ts.createCompilerHost(config.options, true);
+  const read = host.getSourceFile.bind(host);
+  const exists = host.fileExists.bind(host);
+  host.getSourceFile = (name, version, ...rest) => {
+    const text = virtual.get(name);
+    return text === undefined
+      ? read(name, version, ...rest)
+      : ts.createSourceFile(name, text, version, true);
+  };
+  host.fileExists = (name) => virtual.has(name) || exists(name);
+  return ts.createProgram(files, config.options, host);
+}
 
 /**
- * Every call of a `mediaDevices` method in `source` that is NOT inside a function passed to `inTurn(…)`,
- * as `file:line method`. Parsed by TypeScript's own parser, never matched by a pattern: a comment or a string
- * that names the API is not a call, and an optional chain or an alias of `navigator` still is.
+ * Every reference in `sf` to a gated `MediaDevices` member that is NOT inside a function passed to
+ * `inTurn(…)`, as `file:line member`. By RESOLVED SYMBOL, through the type checker — never by the name
+ * `mediaDevices`: an alias (`const md = navigator.mediaDevices; md.enumerateDevices()`), an element access
+ * (`navigator.mediaDevices['getUserMedia']`), a destructured alias (`const { mediaDevices: m } = navigator`)
+ * and a destructured method (`const { enumerateDevices } = navigator.mediaDevices`) are all the same request,
+ * and a comment or a string naming the API is none. A reference counts whether it is called or only read,
+ * because a read is how a call around the gate is spelled.
  */
-function bypasses(file: string, source: string): { calls: number; outside: string[] } {
-  const sf = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
-  let calls = 0;
+function bypasses(
+  program: ts.Program,
+  sf: ts.SourceFile,
+): { references: number; outside: string[] } {
+  const checker = program.getTypeChecker();
+  let references = 0;
   const outside: string[] = [];
+  const gated = (symbol: ts.Symbol | undefined): string | null => {
+    if (!symbol) return null;
+    const name = checker.getFullyQualifiedName(symbol);
+    return GATED.has(name) ? name : null;
+  };
   const insideInTurn = (node: ts.Node): boolean => {
     for (let n: ts.Node | undefined = node.parent; n; n = n.parent) {
       if (
@@ -148,57 +180,82 @@ function bypasses(file: string, source: string): { calls: number; outside: strin
     return false;
   };
   const visit = (node: ts.Node): void => {
-    if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)) {
-      const target = node.expression.expression;
-      const onMediaDevices =
-        (ts.isPropertyAccessExpression(target) && target.name.text === 'mediaDevices') ||
-        (ts.isIdentifier(target) && target.text === 'mediaDevices');
-      if (onMediaDevices && !NOT_A_REQUEST.has(node.expression.name.text)) {
-        calls += 1;
-        if (!insideInTurn(node)) {
-          const { line } = sf.getLineAndCharacterOfPosition(node.getStart());
-          outside.push(`${file}:${line + 1} ${node.expression.name.text}`);
-        }
+    let found: string | null = null;
+    if (ts.isPropertyAccessExpression(node)) {
+      found = gated(checker.getSymbolAtLocation(node.name));
+    } else if (
+      ts.isElementAccessExpression(node) &&
+      ts.isStringLiteralLike(node.argumentExpression)
+    ) {
+      found = gated(
+        checker.getTypeAtLocation(node.expression).getProperty(node.argumentExpression.text),
+      );
+    } else if (ts.isBindingElement(node) && ts.isObjectBindingPattern(node.parent)) {
+      const key = node.propertyName ?? node.name;
+      if (ts.isIdentifier(key) || ts.isStringLiteralLike(key)) {
+        found = gated(checker.getTypeAtLocation(node.parent).getProperty(key.text));
+      }
+    }
+    if (found) {
+      references += 1;
+      if (!insideInTurn(node)) {
+        const { line } = sf.getLineAndCharacterOfPosition(node.getStart());
+        outside.push(`${sf.fileName.slice(PACKAGE.length)}:${line + 1} ${found.split('.')[1]}`);
       }
     }
     ts.forEachChild(node, visit);
   };
   visit(sf);
-  return { calls, outside };
+  return { references, outside };
 }
 
 describe('nothing asks the platform for a camera around the gate', () => {
-  it('the check finds a call that goes around inTurn, and passes one that goes through it', () => {
-    const around = bypasses(
-      'sample.ts',
-      `
-      // navigator.mediaDevices.getUserMedia() in a comment is not a call
-      const said = 'navigator.mediaDevices.enumerateDevices()';
-      export const ok = () => inTurn(() => navigator.mediaDevices.getUserMedia({ video: true }));
-      export const bad = () => navigator.mediaDevices?.enumerateDevices();
-      export const alsoBad = (md: MediaDevices) => md.getUserMedia({});
-      export const listens = () => navigator.mediaDevices.addEventListener('devicechange', () => {});
-      `,
-    );
-    expect(around.calls).toBe(2);
-    expect(around.outside).toEqual(['sample.ts:5 enumerateDevices']);
+  it('every spelling of a request around inTurn is caught, and the one through it is not', () => {
+    const sample = join(PACKAGE, 'src', '__gate-sample__.ts');
+    const lines = [
+      'declare function inTurn<T>(what: string, ask: () => Promise<T>): Promise<T>;',
+      "export const ok = () => inTurn('x', () => navigator.mediaDevices.getUserMedia({ video: true }));",
+      'export const direct = () => navigator.mediaDevices.enumerateDevices();',
+      'export const alias = () => { const md = navigator.mediaDevices; return md.enumerateDevices(); };',
+      "export const element = () => navigator.mediaDevices['getUserMedia']({ video: true });",
+      'export const renamed = () => { const { mediaDevices: m } = navigator; return m.getUserMedia({}); };',
+      'export const method = () => { const { enumerateDevices } = navigator.mediaDevices; return enumerateDevices; };',
+      "// navigator.mediaDevices.getUserMedia() in a comment is not a request; nor is 'enumerateDevices()' in a string",
+      "export const said = 'navigator.mediaDevices.enumerateDevices()';",
+      "export const listens = () => navigator.mediaDevices.addEventListener('devicechange', () => {});",
+    ];
+    const program = programOf([sample], new Map([[sample, lines.join('\n')]]));
+    const sf = program.getSourceFile(sample);
+    if (!sf) throw new Error('the sample was not read');
+    const { references, outside } = bypasses(program, sf);
+    expect(outside).toEqual([
+      'src/__gate-sample__.ts:3 enumerateDevices',
+      'src/__gate-sample__.ts:4 enumerateDevices',
+      'src/__gate-sample__.ts:5 getUserMedia',
+      'src/__gate-sample__.ts:6 getUserMedia',
+      'src/__gate-sample__.ts:7 enumerateDevices',
+    ]);
+    expect(references).toBe(6);
   });
 
-  it('every mediaDevices call in the package goes through inTurn — and there are calls to check', () => {
+  it('every request in the package goes through inTurn — and there are requests to check', () => {
     const files = SOURCE_DIRS.flatMap((dir) =>
       readdirSync(join(PACKAGE, dir), { recursive: true, encoding: 'utf8' })
         .filter((f) => f.endsWith('.ts') && !f.endsWith('.d.ts'))
-        .map((f) => join(dir, f)),
+        .map((f) => join(PACKAGE, dir, f)),
     );
-    let calls = 0;
+    const program = programOf(files);
+    let references = 0;
     const outside: string[] = [];
     for (const file of files) {
-      const found = bypasses(file, readFileSync(join(PACKAGE, file), 'utf8'));
-      calls += found.calls;
+      const sf = program.getSourceFile(file);
+      if (!sf) throw new Error(`${file} was not read`);
+      const found = bypasses(program, sf);
+      references += found.references;
       outside.push(...found.outside);
     }
-    // A check that reads no call checks nothing: getUserMedia and enumerateDevices are both here today.
-    expect(calls).toBeGreaterThanOrEqual(2);
+    // A check that reads no request checks nothing: getUserMedia and enumerateDevices are both here today.
+    expect(references).toBeGreaterThanOrEqual(2);
     expect(outside).toEqual([]);
-  });
+  }, 60_000);
 });
