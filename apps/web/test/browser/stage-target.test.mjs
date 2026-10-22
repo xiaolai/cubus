@@ -30,6 +30,7 @@ import { spawn } from 'node:child_process';
 import { after, before, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { launchBrowser } from './harness.mjs';
+import { fakeScan } from './fake-scan.mjs';
 
 import { algIds } from '../../lib/alg-library.js';
 import { turnFacelets } from '../../lib/cube-orientation.js';
@@ -126,11 +127,7 @@ async function scrambled(page) {
 async function frozen(page, facelets) {
   await page.goto(`${BASE}/#/scan`);
   await page.waitForSelector('#stageCard', { state: 'attached' });
-  await page.evaluate((f) => {
-    document.querySelector('ai-scan-panel').dispatchEvent(new CustomEvent('scan-complete', {
-      detail: { facelets: f, rotations: [0, 0, 0, 0, 0, 0] },
-    }));
-  }, facelets);
+  await fakeScan(page, facelets);
   await page.waitForFunction(() => document.querySelector('#stageCard')?.hidden === false, null);
   await page.evaluate(() => { location.hash = '#/home'; });
   // Home's own chips: a wait on any chip can be met by the screen being left (CI 39607667813, the same race).
@@ -301,11 +298,7 @@ test('the Restore chips appear after a scan, and press through to a walk', async
     // The event a finished scan fires, with the model and the camera left out. `scan-complete` is
     // what the app listens to; dispatching it drives the real handler, the real adoption and the
     // real chip painter.
-    await page.evaluate((facelets) => {
-      document.querySelector('ai-scan-panel').dispatchEvent(new CustomEvent('scan-complete', {
-        detail: { facelets, rotations: [0, 0, 0, 0, 0, 0] },
-      }));
-    }, SCANNED);
+    await fakeScan(page, SCANNED);
 
     await page.waitForFunction(() => document.querySelector('#stageCard')?.hidden === false, null);
     // The CHOSEN method's stops (owner's call Q8): a new install is on Quick, whose row is the beginner's.
@@ -404,11 +397,7 @@ test('a cube already at the target is told so, and is handed no walk to follow',
   try {
     await page.goto(`${BASE}/#/scan`);
     await page.waitForSelector('#stageCard', { state: 'attached' });
-    await page.evaluate((facelets) => {
-      document.querySelector('ai-scan-panel').dispatchEvent(new CustomEvent('scan-complete', {
-        detail: { facelets, rotations: [0, 0, 0, 0, 0, 0] },
-      }));
-    }, TWO_LAYERS_DONE);
+    await fakeScan(page, TWO_LAYERS_DONE);
     await page.waitForFunction(() => document.querySelector('#stageCard')?.hidden === false, null);
 
     // The chip says it in one word before anything is pressed.

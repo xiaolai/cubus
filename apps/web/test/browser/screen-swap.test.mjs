@@ -42,6 +42,7 @@ import { pace } from '../browser-wait.mjs';
 import { freePort } from '../free-port.mjs';
 import { CONTRACT_CUBES } from '../fixtures/solver-cubes.mjs';
 import { launchBrowser, LIVENESS_MS } from './harness.mjs';
+import { fakeScan } from './fake-scan.mjs';
 
 // Asked of the OS in before(), not chosen: a fixed port collides with an orphaned server
 // from an interrupted run, which fails at startup and reads like a regression. See free-port.mjs.
@@ -512,11 +513,7 @@ for (const fixture of HOME_SCAN_FIXTURES) {
       await page.goto(`${BASE}/?insets=${fixture.insets}#/scan`);
       await page.waitForSelector('.screen.active[data-screen="scan"] #stageCard', { state: 'attached' });
       // CONTRACT_CUBES[0]: a frozen 20-move cube, so the search takes real time on every machine.
-      await page.evaluate((f) => {
-        document.querySelector('ai-scan-panel').dispatchEvent(new CustomEvent('scan-complete', {
-          detail: { facelets: f, rotations: [0, 0, 0, 0, 0, 0] },
-        }));
-      }, CONTRACT_CUBES[0]);
+      await fakeScan(page, CONTRACT_CUBES[0]);
       await page.waitForFunction(() => document.querySelector('#stageCard')?.hidden === false, null);
 
       // HOME AFTER A SCAN, from the navigation: the walk's list, on the screen asked for — only this walk draws it.

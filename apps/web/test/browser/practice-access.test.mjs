@@ -18,6 +18,7 @@ import { ORIENTATIONS } from '../../lib/cube-orientation.js';
 import { toFacelets } from '../../lib/cube-pieces.js';
 import { lcg } from '../fixtures/seeded-scrambles.mjs';
 import { LIVENESS_MS, startBrowserFixture } from './harness.mjs';
+import { cameraSettled } from './fake-scan.mjs';
 import {
   AXIS, PAST_WINDOW_MS, axesNear, feedRep, mixStage, openPractice, randomStart, reportsPerToken, settle, show, stageToMix, toLibrary,
 } from './practice-page.mjs';
@@ -251,6 +252,7 @@ test('within a screen\'s body no icon is drawn by two controls with different na
       // "Scan the … side again", which drew the same symbol as "Throw the whole scan away" — and a fresh screen has no
       // read side, so measuring it alone could never see the clash. Fed through the event the scanner emits.
       if (route === 'scan') {
+        await cameraSettled(page);
         await page.evaluate(() => document.querySelector('ai-scan-panel').dispatchEvent(new CustomEvent('scan-progress', { detail: {
           phase: 'scanning', message: '', sides: 1, live: null, settling: null, seen: null, shownAgain: false, device: null, confirm: null,
           identity: null, complete: false, suspects: [], notice: null, captured: [{ face: 'U', colors: Array(9).fill(0), by: 'centre' }] } })));

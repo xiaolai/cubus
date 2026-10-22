@@ -27,6 +27,7 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { after, before, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { launchBrowser } from './harness.mjs';
+import { cameraSettled, fakeScan } from './fake-scan.mjs';
 
 import { pace } from '../browser-wait.mjs';
 
@@ -1133,11 +1134,7 @@ const landscapeFixtures = FIXTURES.filter((f) => f.height - f.insets[0] - f.inse
 async function frozenOnHome(page, facelets) {
   await page.evaluate(() => { location.hash = '#/scan'; });
   await page.waitForSelector('#stageCard', { state: 'attached' });
-  await page.evaluate((f) => {
-    document.querySelector('ai-scan-panel').dispatchEvent(new CustomEvent('scan-complete', {
-      detail: { facelets: f, rotations: [0, 0, 0, 0, 0, 0] },
-    }));
-  }, facelets);
+  await fakeScan(page, facelets);
   await page.waitForFunction(() => document.querySelector('#stageCard')?.hidden === false, null);
   await page.evaluate(() => { location.hash = '#/home'; });
   await page.waitForSelector('.screen.active[data-screen="home"] #solList .chip-m');
@@ -2411,11 +2408,7 @@ for (const fixture of FIXTURES) {
     const { page, context } = await open(fixture, 'scan');
     try {
       await page.waitForSelector('#stageCard', { state: 'attached' });
-      await page.evaluate((facelets) => {
-        document.querySelector('ai-scan-panel').dispatchEvent(new CustomEvent('scan-complete', {
-          detail: { facelets, rotations: [0, 0, 0, 0, 0, 0] },
-        }));
-      }, SCANNED_CUBE);
+      await fakeScan(page, SCANNED_CUBE);
       await page.waitForFunction(() => document.querySelector('#stageCard')?.hidden === false, null);
       await page.waitForFunction(
         () => [...document.querySelectorAll('.stage-chip .howfar')].every((el) => el.textContent !== '…'),
@@ -2467,9 +2460,7 @@ for (const fixture of FIXTURES) {
       // AN UNSOLVABLE READING after it (sweep 2026-10-20, B1): every chip is a dash, the row keeps its height, and the notice
       // card had what was left — on the desktop portrait window less than its own title, which the card cut by 6px and its
       // body by 10. The body scrolls in its own box; nothing is cut. Waited on the dashes, which only that reading draws.
-      await page.evaluate((facelets) => {
-        document.querySelector('ai-scan-panel').dispatchEvent(new CustomEvent('scan-complete', { detail: { facelets, rotations: [0, 0, 0, 0, 0, 0] } }));
-      }, UNSOLVABLE_SCAN);
+      await fakeScan(page, UNSOLVABLE_SCAN);
       await page.waitForFunction(() => [...document.querySelectorAll('.stage-chip .howfar')].every((el) => el.textContent === '—'), null, { timeout: 90_000 });
       const after = await page.evaluate(`(() => {
         const how = document.querySelector('#scanHow');
@@ -2534,6 +2525,7 @@ for (const fixture of FIXTURES) {
       // screenshot, 2026-09-06). The card is what gives: it scrolls inside itself, and the button
       // stays whole and inside the box. Fed through the same event the scanner emits, so the
       // host's own painter lays it out.
+      await cameraSettled(page);
       await page.evaluate(() => {
         document.querySelector('ai-scan-panel').dispatchEvent(new CustomEvent('scan-progress', {
           detail: {
@@ -2606,6 +2598,7 @@ for (const fixture of FIXTURES) {
         assert.ok(m.nextTop - m.inkBottom <= 70, `${m.nextTop - m.inkBottom}px of empty page under the cross on the iPad portrait`);
       }
       // READINGS DO NOT RESIZE IT: two sides read, the notice gone, and every tile where it was.
+      await cameraSettled(page);
       await page.evaluate(() => {
         document.querySelector('ai-scan-panel').dispatchEvent(new CustomEvent('scan-progress', { detail: {
           phase: 'scanning', message: 'Show the next side.', sides: 2, live: null, confirm: null, device: null, complete: false, notice: null,
@@ -3495,7 +3488,7 @@ test('with a smart cube connected, no screen but a walk on Home or Scramble draw
     // Home with no walk: a solved cube has nothing to lead either.
     await visit(page, 'scan');
     await page.waitForSelector('#stageCard', { state: 'attached' });
-    await page.evaluate((f) => document.querySelector('ai-scan-panel').dispatchEvent(new CustomEvent('scan-complete', { detail: { facelets: f, rotations: [0, 0, 0, 0, 0, 0] } })), 'UUUUUUUUURRRRRRRRRFFFFFFFFFDDDDDDDDDLLLLLLLLLBBBBBBBBB');
+    await fakeScan(page, 'UUUUUUUUURRRRRRRRRFFFFFFFFFDDDDDDDDDLLLLLLLLLBBBBBBBBB');
     await page.waitForFunction(() => document.querySelector('#stageCard')?.hidden === false);
     await visit(page, 'home');
     await page.waitForFunction(() => document.querySelector('.screen.active') && !document.querySelector('#solList .chip-m'));
