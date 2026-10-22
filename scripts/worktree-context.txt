@@ -1,0 +1,37 @@
+# The ignored agent context every git worktree of this repo SHARES with the main checkout.
+#
+# One path per line, relative to the repo root; `#` starts a comment. Each path is gitignored, so
+# git gives a worktree none of them, and a copy made by hand drifts silently. Every one is LINKED
+# from the main checkout by scripts/link-worktree-context.sh, never copied.
+#
+# Read by three things, so this file is the one list:
+#   - scripts/link-worktree-context.sh   creates the links (and refuses to replace a differing copy)
+#   - apps/web/test/worktree-context.test.mjs   asserts every other worktree links each path, and
+#     that every AGENTS.md / CLAUDE.md git ignores in this checkout is named here
+#   - scripts/check-on-clone.sh   hides each path, since a clone has none of them
+#
+# A new area rule file is added here, as its AGENTS.md and the CLAUDE.md importing it.
+
+# The maintainer's notes and decision record.
+dev-docs
+AGENTS.md
+CLAUDE.md
+
+# MCP registrations. Shared rather than per-worktree: the one setting that could differ by checkout,
+# the tauri-mcp socket path, is taken from TAURI_MCP_IPC_PATH at run time, and csp.test.mjs reads
+# this file, so a drifted copy would be checked in place of the real one.
+.mcp.json
+
+# Area rule files, split out of AGENTS.md on 2026-10-22.
+apps/web/AGENTS.md
+apps/web/CLAUDE.md
+apps/web/lib/AGENTS.md
+apps/web/lib/CLAUDE.md
+apps/web/lib/screens/scan/AGENTS.md
+apps/web/lib/screens/scan/CLAUDE.md
+packages/cube-scanner/AGENTS.md
+packages/cube-scanner/CLAUDE.md
+packages/cubus-cube/AGENTS.md
+packages/cubus-cube/CLAUDE.md
+ml/AGENTS.md
+ml/CLAUDE.md

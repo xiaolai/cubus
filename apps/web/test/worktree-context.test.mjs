@@ -7,9 +7,10 @@
 // for days; it failed `no-dangling-pointers` for four plans that existed; and a `cp` of one copy over
 // the other destroyed four rows permanently, because an untracked file has no history to restore from.
 //
-// The fix is structural rather than a discipline: `AGENTS.md` was already a symlink, and `dev-docs/`
-// is one now, so the two cannot differ. This is the assertion that says so — the rule's other half,
-// because a rule nothing enforces is a preference.
+// The fix is structural rather than a discipline: every path in scripts/worktree-context.txt — dev-docs,
+// every AGENTS.md with the CLAUDE.md importing it, .mcp.json — is a symlink to the main checkout's,
+// made by scripts/link-worktree-context.sh, so no two can differ. This is the assertion that says so —
+// the rule's other half, because a rule nothing enforces is a preference.
 //
 // SKIPS, NEVER PASSES, when there is no second worktree to check: in CI there is one checkout and
 // nothing to compare, and a check that quietly passes on an empty set is one change from checking
@@ -20,6 +21,7 @@ import { existsSync, realpathSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
+import { WORKTREE_CONTEXT } from './fixtures/worktree-context.mjs';
 
 const REPO = fileURLToPath(new URL('../../../', import.meta.url));
 
@@ -39,8 +41,9 @@ function worktrees() {
   }
 }
 
-/** What a checkout's ignored context must be: one directory, shared, never a copy. */
-const SHARED = ['dev-docs', 'AGENTS.md'];
+/** What a checkout's ignored context must be: shared, never a copy. Read from the one tracked list,
+ *  scripts/worktree-context.txt, which scripts/link-worktree-context.sh links from. */
+const SHARED = WORKTREE_CONTEXT;
 
 test('every other worktree shares this checkout\'s ignored context rather than copying it', (t) => {
   const trees = worktrees();
@@ -48,7 +51,7 @@ test('every other worktree shares this checkout\'s ignored context rather than c
   assert.ok(trees.length > 0, 'the worktree list parsed to nothing, so this check went blind');
 
   // THE CLEAN-CLONE RUN HIDES EXACTLY WHAT THIS READS. `scripts/check-on-clone.sh` moves `dev-docs`
-  // and `AGENTS.md` aside so the suite sees what a clone sees, then runs these tests — and an
+  // and `AGENTS.md` (every manifest path) aside so the suite sees what a clone sees, then runs these tests — and an
   // unconditional `realpathSync` threw ENOENT and took that run down with it (audit, 2026-10-06).
   // Absent context is a reason to say nothing, not a failure.
   const missing = SHARED.filter((name) => !existsSync(join(REPO, name)));
@@ -71,8 +74,28 @@ test('every other worktree shares this checkout\'s ignored context rather than c
     }
   }
   assert.deepEqual(wrong, [],
-    'a worktree holds its own copy of the ignored context three gates read. Replace it with a symlink '
-    + 'to this checkout\'s — and merge anything unique out of it FIRST, row-wise for the ledger, '
+    'a worktree lacks, or holds its own copy of, the ignored context it must share. Run '
+    + 'scripts/link-worktree-context.sh <worktree> from this checkout: it links every path and refuses a '
+    + 'copy that differs — merge anything unique out of that copy FIRST, row-wise for the ledger, '
     + 'because an untracked file has no history to restore from.');
   t.diagnostic(`${others.length} other worktree(s) share ${SHARED.join(' and ')}`);
+});
+
+// THE LIST IS COMPLETE, asked of git rather than believed. An area rule file that is not in the
+// manifest is never linked, so an agent in a worktree silently works without its rules. Every
+// AGENTS.md or CLAUDE.md git ignores here — outside directories ignored whole, which `--directory`
+// collapses (node_modules, agents' own worktrees) — must be named.
+test('every agent rule file git ignores in this checkout is in the worktree manifest', (t) => {
+  let out;
+  try {
+    out = execFileSync('git', ['ls-files', '--others', '--ignored', '--exclude-standard', '--directory'],
+      { cwd: REPO, encoding: 'utf8', maxBuffer: 1 << 26 });
+  } catch {
+    return t.skip('git could not be asked for the ignored files');
+  }
+  const ruleFiles = out.split('\n').filter((f) => /(?:^|\/)(?:AGENTS|CLAUDE)\.md$/.test(f));
+  if (ruleFiles.length === 0) return t.skip('no ignored agent rule files here — a clone, or a clean-clone run');
+  const unlisted = ruleFiles.filter((f) => !SHARED.includes(f));
+  assert.deepEqual(unlisted, [], 'add these to scripts/worktree-context.txt so every worktree links them');
+  t.diagnostic(`${ruleFiles.length} agent rule file(s), all in the manifest`);
 });

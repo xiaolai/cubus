@@ -39,15 +39,21 @@ HIDDEN=()
 # What gets hidden: paths and globs relative to the repo root, expanded at hide time. Named once,
 # because the recovery below must look for exactly these and nothing else: a stash holding
 # anything unexpected is a situation to report, not to tidy up by moving strangers into the repo
-# root. dev-docs and .codex stay first so the log reads the same as it always has. The last three
-# are the maintainer's decision record and agent registrations, untracked since 2026-09-06 — a
-# clone has none of them, and csp.test.mjs reads one. After them, each area's AGENTS.md and the
-# CLAUDE.md importing it (split out of the root file on 2026-10-22; ignored at every depth). Named
-# path by path, never globbed by depth: a `*/*/AGENTS.md` would also move files out of node_modules
-# and out of agents' worktrees under .claude/. A new area file joins this list.
-AREA_RULES=(apps/web apps/web/lib apps/web/lib/screens/scan packages/cube-scanner packages/cubus-cube ml)
-HIDE=(dev-docs .codex .cc-suite.md 'grill-report-*.md' '.claude/*.local.*' .agents/skills runs error.log AGENTS.md CLAUDE.md .mcp.json)
-for area in "${AREA_RULES[@]}"; do HIDE+=("$area/AGENTS.md" "$area/CLAUDE.md"); done
+# root. FIRST, every path scripts/worktree-context.txt names — the agent context a worktree links
+# rather than copies: dev-docs, every AGENTS.md and the CLAUDE.md importing it, .mcp.json (which
+# csp.test.mjs reads). A clone has none of them, and reading that one list means a new area rule
+# file is hidden here the day it is linked into worktrees, with no second list to forget. Then the
+# other ignored inputs a clone lacks. dev-docs and .codex still lead the log when both are present.
+WORKTREE_CONTEXT="scripts/worktree-context.txt"
+[ -f "$WORKTREE_CONTEXT" ] || { echo "FATAL: no $WORKTREE_CONTEXT — cannot tell what a clone lacks" >&2; exit 1; }
+HIDE=()
+while IFS= read -r line || [ -n "$line" ]; do
+  line="${line%%#*}"
+  line="$(printf '%s' "$line" | tr -d '[:space:]')"
+  [ -n "$line" ] && HIDE+=("$line")
+done < "$WORKTREE_CONTEXT"
+[ ${#HIDE[@]} -gt 0 ] || { echo "FATAL: $WORKTREE_CONTEXT names nothing" >&2; exit 1; }
+HIDE+=(.codex .cc-suite.md 'grill-report-*.md' '.claude/*.local.*' .agents/skills runs error.log)
 # A FIXED path inside the repo, not mktemp.
 #
 # This script moves gitignored directories aside, which means for the length of a run the only
