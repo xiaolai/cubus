@@ -29,6 +29,12 @@ import { fileURLToPath } from 'node:url';
 
 const SCRIPT = fileURLToPath(new URL('../../../scripts/check-on-clone.sh', import.meta.url));
 const STASH = '.check-on-clone-stash';
+// The directories holding an area's AGENTS.md and its importing CLAUDE.md, in the script's order.
+const AREA_DIRS = ['apps/web', 'apps/web/lib', 'apps/web/lib/screens/scan', 'packages/cube-scanner', 'packages/cubus-cube', 'ml'];
+const AREA_HIDDEN = AREA_DIRS
+  .flatMap((d) => [`${d}/AGENTS.md`, `${d}/CLAUDE.md`])
+  .map((f) => f.replace(/[./]/g, (c) => `\\${c}`))
+  .join(' ');
 // Every tool the script's checks declare they need. The icons check needs rsvg-convert as well as
 // python3: verify-icons.py reports its renderer-dependent measurements as informational without
 // it, and a run that could only be informational is a skip, not a pass.
@@ -132,12 +138,19 @@ test('every ignored input a clone lacks is hidden and restored, files and symlin
     writeFileSync(join(root, 'AGENTS.md'), 'decisions');
     writeFileSync(join(root, 'CLAUDE.md'), '@AGENTS.md\n');
     writeFileSync(join(root, '.mcp.json'), '{"mcpServers":{}}');
+    // The area rule files split out of AGENTS.md on 2026-10-22: ignored at every depth, so a clone
+    // has none of them either, and each sits in a directory that must survive the move.
+    for (const dir of AREA_DIRS) {
+      mkdirSync(join(root, dir), { recursive: true });
+      writeFileSync(join(root, dir, 'AGENTS.md'), `rules for ${dir}`);
+      writeFileSync(join(root, dir, 'CLAUDE.md'), '@AGENTS.md\n');
+    }
 
     const r = run(root);
     assert.equal(r.status, 0, r.stdout + r.stderr);
     assert.match(
       r.stdout,
-      /hidden: dev-docs \.codex \.cc-suite\.md grill-report-2026-01-01\.md \.claude\/settings\.local\.json \.agents\/skills runs error\.log AGENTS\.md CLAUDE\.md \.mcp\.json -> \.check-on-clone-stash/,
+      new RegExp(String.raw`hidden: dev-docs \.codex \.cc-suite\.md grill-report-2026-01-01\.md \.claude\/settings\.local\.json \.agents\/skills runs error\.log AGENTS\.md CLAUDE\.md \.mcp\.json ${AREA_HIDDEN} -> \.check-on-clone-stash`),
       'not every ignored input was hidden, or not in the declared order',
     );
     assert.equal(readFileSync(join(root, '.cc-suite.md'), 'utf8'), 'suite');
@@ -149,6 +162,10 @@ test('every ignored input a clone lacks is hidden and restored, files and symlin
     assert.equal(readFileSync(join(root, 'CLAUDE.md'), 'utf8'), '@AGENTS.md\n');
     assert.equal(readFileSync(join(root, '.mcp.json'), 'utf8'), '{"mcpServers":{}}');
     assert.ok(lstatSync(join(root, '.agents/skills')).isSymbolicLink(), 'the symlink came back as something else');
+    for (const dir of AREA_DIRS) {
+      assert.equal(readFileSync(join(root, dir, 'AGENTS.md'), 'utf8'), `rules for ${dir}`);
+      assert.equal(readFileSync(join(root, dir, 'CLAUDE.md'), 'utf8'), '@AGENTS.md\n');
+    }
     assert.equal(existsSync(join(root, STASH)), false);
   } finally {
     rmSync(root, { recursive: true, force: true });

@@ -41,8 +41,13 @@ HIDDEN=()
 # anything unexpected is a situation to report, not to tidy up by moving strangers into the repo
 # root. dev-docs and .codex stay first so the log reads the same as it always has. The last three
 # are the maintainer's decision record and agent registrations, untracked since 2026-09-06 — a
-# clone has none of them, and csp.test.mjs reads one.
+# clone has none of them, and csp.test.mjs reads one. After them, each area's AGENTS.md and the
+# CLAUDE.md importing it (split out of the root file on 2026-10-22; ignored at every depth). Named
+# path by path, never globbed by depth: a `*/*/AGENTS.md` would also move files out of node_modules
+# and out of agents' worktrees under .claude/. A new area file joins this list.
+AREA_RULES=(apps/web apps/web/lib apps/web/lib/screens/scan packages/cube-scanner packages/cubus-cube ml)
 HIDE=(dev-docs .codex .cc-suite.md 'grill-report-*.md' '.claude/*.local.*' .agents/skills runs error.log AGENTS.md CLAUDE.md .mcp.json)
+for area in "${AREA_RULES[@]}"; do HIDE+=("$area/AGENTS.md" "$area/CLAUDE.md"); done
 # A FIXED path inside the repo, not mktemp.
 #
 # This script moves gitignored directories aside, which means for the length of a run the only
