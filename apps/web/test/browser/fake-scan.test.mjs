@@ -1,5 +1,5 @@
 // `fakeScan` (fake-scan.mjs) in both of its outcomes. A refused camera, which is every test context: the faked
-// scan is adopted and STAYS, after the camera's refusal has certainly landed. A camera that answered: the helper
+// scan is adopted and STAYS, after the camera's refusal has certainly landed — refused late on purpose. A camera that answered: the helper
 // refuses, loudly, rather than fake a scan the panel's next report would take down.
 import assert from 'node:assert/strict';
 import { after, before, test } from 'node:test';
@@ -20,18 +20,29 @@ before(async () => {
 });
 after(async () => { await Promise.all([webkit?.close(), chromium?.close()]); });
 
-test('on a refused camera, a faked scan is adopted and is still there once the refusal has landed', async () => {
+/** How long after it is asked the camera is refused, in the case below: long enough that a scan faked before the
+ *  refusal is certainly faked first, on any machine — the race the helper exists for, made to happen every time.
+ *  Loading the scan screen directly, the refusal usually beat the dispatch (0 of 25 lost it there; 4 of 25 only
+ *  via Home), so without this the case passed with the wait removed (verifier, 2026-10-23). */
+const LATE_REFUSAL_MS = 700;
+
+test('on a camera refused LATE, a faked scan waits for the refusal and is still there after it', async () => {
   const context = await webkit.browser.newContext();
   try {
+    await context.addInitScript((ms) => {
+      MediaDevices.prototype.getUserMedia = () => new Promise((_, reject) => {
+        setTimeout(() => reject(new DOMException('refused late, on purpose', 'NotAllowedError')), ms);
+      });
+    }, LATE_REFUSAL_MS);
     const page = await context.newPage();
     await page.goto(`${webkit.base}/#/scan`);
     await fakeScan(page, SCANNED, { timeout: LIVENESS_MS });
     await page.waitForFunction(() => document.querySelector('#stageCard')?.hidden === false, null, { timeout: LIVENESS_MS });
-    // What must NOT happen: the card taken down by a report that lands after the fake. Two frames after a
-    // refusal the screen has already painted are not enough to prove much, so the refusal is asserted first.
-    assert.doesNotMatch(await page.locator('#scanHow').textContent(), /^Opening the camera/, 'the camera had not answered yet');
-    await page.evaluate(() => new Promise((r) => setTimeout(r, 500)));
-    assert.equal(await page.evaluate(() => document.querySelector('#stageCard').hidden), false, 'the faked scan was taken down');
+    // The refusal has landed — waited on here, so this holds whether or not the helper waited for it…
+    await page.waitForFunction(() => !/^Opening the camera/.test(document.querySelector('#scanHow')?.textContent.trim() ?? ''), null, { timeout: LIVENESS_MS });
+    await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
+    // …and what must NOT happen: the faked scan taken down by it.
+    assert.equal(await page.evaluate(() => document.querySelector('#stageCard').hidden), false, 'the faked scan was taken down by the late refusal');
   } finally {
     await context.close();
   }
