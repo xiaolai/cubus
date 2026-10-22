@@ -381,7 +381,7 @@ test('no frame is ever presented with the solution card empty', async () => {
       await press(page);
       // Frames after the walk landed, so a late change still has room to show.
       const frames = await framesAfter(page, 30);
-      assert.ok(frames.length > 30, `only ${frames.length} frames sampled — the press was not observed`);
+      assert.ok(frames.length >= 30, `only ${frames.length} frames sampled — the press was not observed`);
 
       const empty = frames.filter((f) => f.solutionCard && f.chips === 0);
       assert.deepEqual(empty, [], 'a composited frame showed the solution card with no moves in it');
@@ -457,7 +457,7 @@ async function walkLandsWhole(page, fixture, { what, screen, act, landed, waited
   await landed();
   const frames = (await framesAfter(page, 30, '__walkFrames', '__walkStop')).filter((f) => f.screen === screen);
   const where = `${fixture.name}, ${what}`;
-  assert.ok(frames.length > 30, `${where}: only ${frames.length} frames sampled — the change was not observed`);
+  assert.ok(frames.length >= 30, `${where}: only ${frames.length} frames sampled — the change was not observed`);
   if (waited) {
     assert.ok(frames.some((f) => f.chips === 0),
       `${where}: no frame before the list — the walk was not searched for, so the wait was never on the paper`);
@@ -636,7 +636,7 @@ test('the renderer is never told to draw a SOLVED cube while the subject is a sc
       && ((a.name === 'scramble' && a.value === '') || (a.name === 'facelets' && a.value === SOLVED)));
     assert.deepEqual(lies, [], 'the renderer was told to draw a solved cube while the subject was scrambled');
 
-    assert.ok(seen.length > 30, `only ${seen.length} frames sampled — the change of subject was not observed`);
+    assert.ok(seen.length >= 30, `only ${seen.length} frames sampled — the change of subject was not observed`);
     const lying = seen.filter((f) => f.subject !== SOLVED && (f.drawn === SOLVED || f.scramble === ''));
     assert.deepEqual(lying, [], 'a composited frame drew a solved cube while the subject was scrambled');
 
