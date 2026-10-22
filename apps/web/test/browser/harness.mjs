@@ -22,6 +22,42 @@ const SERVE = fileURLToPath(new URL('../../serve.mjs', import.meta.url));
 export const LIVENESS_MS = 180_000;
 
 /**
+ * Launch a browser for a test. EVERY browser a suite drives comes from here — `browser-launch.test.mjs`
+ * refuses a direct `webkit.launch()` — because two guards hold only for a browser that has them:
+ *
+ * - Every context gets the navigation bound, `newPage`'s own included — it makes its context through
+ *   `newContext` — so no suite inherits the 30 s default by not thinking of it.
+ * - A page whose web content process DIES is closed at once, naming the crash. Playwright fires
+ *   `crash` and rejects a later `evaluate`, but a call already waiting on that page may never settle:
+ *   `keyboard.press` takes no timeout, and with WebKit's content process killed it was still pending
+ *   after 20 s on macOS — a focus-visible run on Linux waited 35 minutes with no web process left.
+ *   Closing the page rejects every call in flight on it, with the reason in its message, so the test
+ *   fails where the page died and says so rather than waiting on a page that is gone. A browser that
+ *   disconnects already rejects every call on its own connection.
+ *
+ * @param {'webkit' | 'chromium'} engine
+ * @param {import('playwright').LaunchOptions} [options]
+ * @returns {Promise<import('playwright').Browser>}
+ */
+export async function launchBrowser(engine, options = {}) {
+  const engines = { webkit, chromium };
+  if (!Object.hasOwn(engines, engine)) throw new Error(`launchBrowser: no engine "${engine}"`);
+  const browser = await engines[engine].launch(options);
+  const newContext = browser.newContext.bind(browser);
+  browser.newContext = async (...args) => {
+    const context = await newContext(...args);
+    context.setDefaultNavigationTimeout(LIVENESS_MS);
+    context.on('page', (page) => page.once('crash', () => {
+      const reason = `${engine}'s web content process crashed under ${page.url()}`;
+      console.error(`[harness] ${reason}`);
+      page.close({ reason }).catch(() => {});
+    }));
+    return context;
+  };
+  return browser;
+}
+
+/**
  * Start the dev server and a browser: WebKit, the engine the desktop app runs in, unless a suite
  * asks for Chromium — the appearance goldens do, because Chromium draws with the same software
  * rasteriser on every machine they are compared on. `launch` is passed to Playwright's launch().
@@ -68,20 +104,11 @@ export async function startBrowserFixture({ engine = 'webkit', launch = {} } = {
 
   let browser;
   try {
-    browser = await engines[engine].launch(launch);
+    browser = await launchBrowser(engine, launch);
   } catch (cause) {
     proc.kill('SIGTERM');
     throw new Error(`${engine} for Playwright did not launch — if it is not installed: pnpm --filter cubus-web exec playwright install ${engine}`, { cause });
   }
-
-  // EVERY context the fixture's browser makes gets the bound, `newPage`'s own included — it makes its
-  // context through `newContext` — so no suite inherits the 30 s default by not thinking of it.
-  const newContext = browser.newContext.bind(browser);
-  browser.newContext = async (...options) => {
-    const context = await newContext(...options);
-    context.setDefaultNavigationTimeout(LIVENESS_MS);
-    return context;
-  };
 
   let closed = null;
   return {
