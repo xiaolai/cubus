@@ -203,6 +203,20 @@ jobs:
         timeout-minutes: 10
         run: pnpm --filter cubus-web exec playwright install --with-deps webkit chromium
 
+      # THE FONTS THE BROWSER SUITES DRAW WITH. The geometry floors were measured in DejaVu, which is
+      # this runner's default sans-serif and is NOT in the plain Playwright image (AGENTS.md §5): a layout
+      # that is green in another face is a different measurement. The digest names every installed face, so
+      # a change to the set shows up as a different log line rather than as a moved floor.
+      - name: fonts the browser suites draw with
+        if: needs.plan.outputs.full == 'true'
+        run: |
+          for family in sans-serif serif monospace system-ui; do
+            printf '%-10s %s\n' "$family" "$(fc-match "$family")"
+          done
+          echo "fc-list: $(fc-list | wc -l) faces, digest $(fc-list --format '%{file}\n' | sort | sha256sum | cut -c1-16)"
+          fc-match -f '%{family}\n' sans-serif | grep -qE '^DejaVu Sans(,|$)' \
+            || { echo "::error::the default sans-serif is not DejaVu Sans, the face the geometry floors were measured in"; exit 1; }
+
       # UNDER XVFB, because the scanner suite launches Chromium HEADED and a runner has no display.
       # Headed is not a preference there: headless Chromium substitutes a software GPU that is
       # ~500x slower than a real one (measured, 7320 ms a frame against 15), so a headless run would
@@ -279,6 +293,19 @@ jobs:
       - name: cubus-web — browser engines for the nightly suites
         timeout-minutes: 10 # as in `ts`: a slow mirror fails here, not as a cancelled suite
         run: pnpm --filter cubus-web exec playwright install --with-deps webkit chromium
+      # THE FONTS THE BROWSER SUITES DRAW WITH. The geometry floors were measured in DejaVu, which is
+      # this runner's default sans-serif and is NOT in the plain Playwright image (AGENTS.md §5): a layout
+      # that is green in another face is a different measurement. The digest names every installed face, so
+      # a change to the set shows up as a different log line rather than as a moved floor.
+      - name: fonts the browser suites draw with
+        run: |
+          for family in sans-serif serif monospace system-ui; do
+            printf '%-10s %s\n' "$family" "$(fc-match "$family")"
+          done
+          echo "fc-list: $(fc-list | wc -l) faces, digest $(fc-list --format '%{file}\n' | sort | sha256sum | cut -c1-16)"
+          fc-match -f '%{family}\n' sans-serif | grep -qE '^DejaVu Sans(,|$)' \
+            || { echo "::error::the default sans-serif is not DejaVu Sans, the face the geometry floors were measured in"; exit 1; }
+
       - name: cubus-web — test:nightly (the browser suites too slow for every push)
         run: xvfb-run -a pnpm --filter cubus-web test:nightly
 
