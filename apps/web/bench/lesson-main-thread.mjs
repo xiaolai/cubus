@@ -14,7 +14,7 @@
 
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { webkit } from 'playwright';
+import { launchBrowser } from '../test/browser/harness.mjs';
 
 import { freePort } from '../test/free-port.mjs';
 
@@ -29,7 +29,7 @@ await new Promise((resolve, reject) => {
   proc.stdout.on('data', (d) => { if (d.toString().includes(`:${port}`)) { clearTimeout(timer); resolve(); } });
   proc.on('error', reject);
 });
-const browser = await webkit.launch();
+const browser = await launchBrowser('webkit');
 
 /** A heartbeat on the page's thread: the longest gap between two 1 ms timers since `start`. */
 const MONITOR = () => {

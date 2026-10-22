@@ -37,12 +37,11 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { after, before, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { webkit } from 'playwright';
 
 import { pace } from '../browser-wait.mjs';
 import { freePort } from '../free-port.mjs';
 import { CONTRACT_CUBES } from '../fixtures/solver-cubes.mjs';
-import { LIVENESS_MS } from './harness.mjs';
+import { launchBrowser, LIVENESS_MS } from './harness.mjs';
 
 // Asked of the OS in before(), not chosen: a fixed port collides with an orphaned server
 // from an interrupted run, which fails at startup and reads like a regression. See free-port.mjs.
@@ -76,7 +75,7 @@ before(async () => {
     proc.on('error', reject);
   });
   try {
-    browser = await webkit.launch();
+    browser = await launchBrowser('webkit');
   } catch (cause) {
     throw new Error('WebKit for Playwright is not installed — run: pnpm --filter cubus-web exec playwright install webkit', { cause });
   }

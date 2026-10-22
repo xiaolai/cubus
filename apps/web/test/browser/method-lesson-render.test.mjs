@@ -15,7 +15,7 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { after, before, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { webkit } from 'playwright';
+import { launchBrowser } from './harness.mjs';
 
 import { convertSelectors } from '../../lib/cube-moves.js';
 import { SOLVED as SOLVED_STATE, applyAlg } from '../../lib/cube-pieces.js';
@@ -86,7 +86,7 @@ before(async () => {
     proc.on('error', reject);
   });
   try {
-    browser = await webkit.launch();
+    browser = await launchBrowser('webkit');
   } catch (cause) {
     throw new Error('WebKit for Playwright is not installed — run: pnpm --filter cubus-web exec playwright install webkit', { cause });
   }

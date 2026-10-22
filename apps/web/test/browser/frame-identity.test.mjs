@@ -22,7 +22,7 @@
 
 import assert from 'node:assert/strict';
 import { after, before, describe, test } from 'node:test';
-import { chromium, webkit } from 'playwright';
+import { launchBrowser } from './harness.mjs';
 
 /** The rule under test, as `camera.ts` states it — copied so the page can run it standalone. */
 const RULE = `
@@ -107,8 +107,8 @@ const PROBE = `
 `;
 
 for (const [name, engine] of [
-  ['WebKit', webkit],
-  ['Chromium', chromium],
+  ['WebKit', 'webkit'],
+  ['Chromium', 'chromium'],
 ]) {
   describe(`frame identity in ${name}`, () => {
     let browser;
@@ -117,7 +117,7 @@ for (const [name, engine] of [
 
     before(async () => {
       try {
-        browser = await engine.launch();
+        browser = await launchBrowser(engine);
       } catch (cause) {
         throw new Error(
           `${name} for Playwright is not installed — run: pnpm --filter cubus-web exec playwright install`,

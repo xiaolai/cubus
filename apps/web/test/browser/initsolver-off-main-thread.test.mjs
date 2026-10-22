@@ -33,12 +33,11 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { after, before, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { webkit } from 'playwright';
 
 import { pace } from '../browser-wait.mjs';
 import { freePort } from '../free-port.mjs';
 import { readAppSource } from '../app-source.mjs';
-import { LIVENESS_MS } from './harness.mjs';
+import { launchBrowser, LIVENESS_MS } from './harness.mjs';
 
 /** The watching window after a walk lands: about 2.5 s at 60 frames a second, the sleep it replaces. */
 const AFTER_FRAMES = 150;
@@ -81,7 +80,7 @@ before(async () => {
     proc.on('error', reject);
   });
   try {
-    browser = await webkit.launch();
+    browser = await launchBrowser('webkit');
   } catch (cause) {
     throw new Error('WebKit for Playwright is not installed — run: pnpm --filter cubus-web exec playwright install webkit', { cause });
   }

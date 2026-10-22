@@ -26,7 +26,7 @@ import { spawn } from 'node:child_process';
 import { readFileSync, readdirSync } from 'node:fs';
 import { after, before, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { webkit } from 'playwright';
+import { launchBrowser } from './harness.mjs';
 
 import { pace } from '../browser-wait.mjs';
 
@@ -74,7 +74,7 @@ before(async () => {
     proc.on('error', reject);
   });
   try {
-    browser = await webkit.launch();
+    browser = await launchBrowser('webkit');
   } catch (cause) {
     throw new Error('WebKit for Playwright is not installed — run: pnpm --filter cubus-web exec playwright install webkit', { cause });
   }
@@ -109,7 +109,7 @@ const CONTEXTS_PER_BROWSER = 24;
 let servedContexts = 0;
 async function relaunchBrowser() {
   await browser.close();
-  browser = await webkit.launch();
+  browser = await launchBrowser('webkit');
   servedContexts = 0;
 }
 async function freshContext(options) {
