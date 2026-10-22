@@ -414,16 +414,17 @@ test('no frame is ever presented with the solution card empty', async () => {
 //
 // Recorded every frame from the navigation, the way SAMPLER is above. The canvas box is what the
 // renderer fits its picture to, and a resize clears it (the CI run that read the cube as 0 px), so
-// a box that changes IS a cube drawn at two sizes.
+// a box that changes IS a cube drawn at two sizes. A Restore stop and a Scramble roll wait in the
+// same `beginWalk`, so the page that has a scanned cube on Home holds them too, one phase each.
 const HOME_SCAN_FIXTURES = [
   { name: 'iPhone SE', width: 375, height: 667, insets: '20,0,0,0', touch: true },
   { name: 'desktop portrait window', width: 574, height: 817, insets: '0,0,0,0' },
   { name: 'desktop landscape window', width: 840, height: 682, insets: '0,0,0,0' },
 ];
 
-const HOME_FRAMES = `(() => {
-  window.__homeFrames = [];
-  window.__homeStop = false;
+const WALK_FRAMES = `(() => {
+  window.__walkFrames = [];
+  window.__walkStop = false;
   const t0 = performance.now();
   const box = (el) => {
     if (!el) return null;
@@ -431,22 +432,53 @@ const HOME_FRAMES = `(() => {
     return { w: b.width, h: b.height };
   };
   const snap = () => {
-    const home = document.querySelector('.screen.active[data-screen="home"]');
-    window.__homeFrames.push({
+    const screen = document.querySelector('.screen.active');
+    window.__walkFrames.push({
       t: +(performance.now() - t0).toFixed(1) + 0,
-      home: Boolean(home),
-      count: home?.querySelector('#moveCount')?.textContent ?? null,
-      chips: home ? home.querySelectorAll('#solList .chip-m').length : 0,
-      slot: box(home?.querySelector('#viewCube')),
-      canvas: box(home?.querySelector('#viewCube canvas')),
+      screen: screen?.dataset.screen ?? null,
+      count: screen?.querySelector('#moveCount')?.textContent ?? null,
+      chips: screen ? screen.querySelectorAll('#solList .chip-m').length : 0,
+      slot: box(screen?.querySelector('#viewCube')),
+      canvas: box(screen?.querySelector('#viewCube canvas')),
     });
-    if (!window.__homeStop) requestAnimationFrame(snap);
+    if (!window.__walkStop) requestAnimationFrame(snap);
   };
   requestAnimationFrame(snap);
 })()`;
 
+/**
+ * Every frame from `act` until `landed` says its walk is on screen, and 30 frames after, held to both MUST-NOTs: no
+ * count beside an empty list, and no cube at a size other than the one it settles at. `waited` asks that some frame
+ * showed the wait itself — only where the walk is searched for long enough that a frame must fall inside it.
+ */
+async function walkLandsWhole(page, fixture, { what, screen, act, landed, waited = false }) {
+  await page.evaluate(WALK_FRAMES);
+  await act();
+  await landed();
+  const frames = (await framesAfter(page, 30, '__walkFrames', '__walkStop')).filter((f) => f.screen === screen);
+  const where = `${fixture.name}, ${what}`;
+  assert.ok(frames.length > 30, `${where}: only ${frames.length} frames sampled — the change was not observed`);
+  if (waited) {
+    assert.ok(frames.some((f) => f.chips === 0),
+      `${where}: no frame before the list — the walk was not searched for, so the wait was never on the paper`);
+  }
+  const settled = frames.at(-1);
+  assert.ok(settled.slot && settled.canvas, `${where}: the settled frame has no cube`);
+  const sizeOff = (a, b) => !a || Math.abs(a.w - b.w) > 0.5 || Math.abs(a.h - b.h) > 0.5;
+  // Both MUST-NOTs in one comparison, so a failure shows every frame of each kind at once.
+  assert.deepEqual({
+    countWithoutList: frames.filter((f) => f.chips === 0 && /\d/.test(f.count ?? '')),
+    cubeAtAnotherSize: frames.filter((f) => sizeOff(f.slot, settled.slot) || sizeOff(f.canvas, settled.canvas)),
+  }, { countWithoutList: [], cubeAtAnotherSize: [] },
+  `${where}: a frame showed a move count beside an empty move list, or drew the cube at a size other than its`
+    + ` settled ${settled.canvas.w}×${settled.canvas.h}`);
+}
+
+/** The visible die: the twin's in landscape, the cube card's tool in portrait. */
+const DIE = '#randCube:visible, #randCubeTool:visible';
+
 for (const fixture of HOME_SCAN_FIXTURES) {
-  test(`Home after a scan: no frame shows the count without the list, or the cube at another size: ${fixture.name}`, async () => {
+  test(`a walk lands whole — count, list and the cube's size together — after a scan, a stop and a roll: ${fixture.name}`, async () => {
     const context = await browser.newContext({ viewport: { width: fixture.width, height: fixture.height }, hasTouch: fixture.touch === true });
     const page = await context.newPage();
     pace(page);
@@ -463,31 +495,46 @@ for (const fixture of HOME_SCAN_FIXTURES) {
       }, CONTRACT_CUBES[0]);
       await page.waitForFunction(() => document.querySelector('#stageCard')?.hidden === false, null);
 
-      await page.evaluate(HOME_FRAMES);
-      await page.evaluate(() => { location.hash = '#/home'; });
-      // The walk's list, on the screen asked for — only this walk draws it.
-      await page.waitForSelector('.screen.active[data-screen="home"] #solList .chip-m', { timeout: LIVENESS_MS });
-      // Then frames AFTER the list landed, counted from that moment, so a late change has room to show.
-      const landed = await page.evaluate(() => window.__homeFrames.length);
-      await page.waitForFunction((n) => window.__homeFrames.length >= n + 30, landed, { timeout: LIVENESS_MS });
-      const frames = await page.evaluate(() => { window.__homeStop = true; return window.__homeFrames; });
+      // HOME AFTER A SCAN, from the navigation: the walk's list, on the screen asked for — only this walk draws it.
+      await walkLandsWhole(page, fixture, {
+        what: 'Home after a scan', screen: 'home', waited: true,
+        act: () => page.evaluate(() => { location.hash = '#/home'; }),
+        landed: () => page.waitForSelector('.screen.active[data-screen="home"] #solList .chip-m', { timeout: LIVENESS_MS }),
+      });
 
-      const onHome = frames.filter((f) => f.home);
-      assert.ok(onHome.length > 30, `${fixture.name}: only ${onHome.length} Home frames sampled — the navigation was not observed`);
-      // The search must have been waited out on screen, or this proves nothing about the wait.
-      const waited = onHome.filter((f) => f.chips === 0);
-      assert.ok(waited.length > 0, `${fixture.name}: no Home frame before the list — the walk was not searched for, so the wait was never on the paper`);
+      // A RESTORE STOP, pressed on the same screen: the first stop the row offers, which this cube has not reached. The
+      // walk it lands is a route, said in its own sentence — never the whole-cube count that stood before the press.
+      const said = await page.textContent('#moveCount');
+      const stop = await page.evaluate(() => [...document.querySelectorAll('#stageTargetRow [data-stage]')]
+        .find((el) => !el.hidden && el.dataset.stage !== 'solved')?.dataset.stage);
+      assert.ok(stop, `${fixture.name}: precondition — the Restore row offers a stop`);
+      await walkLandsWhole(page, fixture, {
+        what: `a walk to "${stop}"`, screen: 'home',
+        act: () => page.evaluate((id) => document.querySelector(`#stageTargetRow [data-stage="${id}"]`).click(), stop),
+        landed: () => page.waitForFunction(([id, was]) => {
+          const count = document.querySelector('#moveCount')?.textContent ?? '';
+          return document.querySelector(`#stageTargetRow [data-stage="${id}"]`)?.classList.contains('on')
+            && count !== was && count !== 'working…' && document.querySelectorAll('#solList .chip-m').length > 0;
+        }, [stop, said], { timeout: LIVENESS_MS }),
+      });
 
-      const settled = onHome.at(-1);
-      assert.ok(settled.slot && settled.canvas, `${fixture.name}: the settled Home frame has no cube`);
-      const sizeOff = (a, b) => !a || Math.abs(a.w - b.w) > 0.5 || Math.abs(a.h - b.h) > 0.5;
-      // Both MUST-NOTs in one comparison, so a failure shows every frame of each kind at once.
-      assert.deepEqual({
-        countWithoutList: onHome.filter((f) => f.chips === 0 && /\d/.test(f.count ?? '')),
-        cubeAtAnotherSize: onHome.filter((f) => sizeOff(f.slot, settled.slot) || sizeOff(f.canvas, settled.canvas)),
-      }, { countWithoutList: [], cubeAtAnotherSize: [] },
-      `${fixture.name}: a frame showed a move count beside an empty move list, or drew the cube at a size other than its`
-        + ` settled ${settled.canvas.w}×${settled.canvas.h}`);
+      // SCRAMBLE, from its navigation: the screen rolls on the way in.
+      await walkLandsWhole(page, fixture, {
+        what: 'Scramble on the way in', screen: 'scramble',
+        act: () => page.evaluate(() => { location.hash = '#/scramble'; }),
+        landed: () => page.waitForFunction(() => document.querySelector('.screen.active[data-screen="scramble"] #solList .chip-m')
+          && [...document.querySelectorAll('#randCube, #randCubeTool')].every((d) => !d.disabled), null, { timeout: LIVENESS_MS }),
+      });
+
+      // AND A ROLL OF ITS DIE: a different list, with the die let go — the die is held until the walk it loads is on screen.
+      const rolled = await page.textContent('#solList');
+      await walkLandsWhole(page, fixture, {
+        what: 'a roll on Scramble', screen: 'scramble',
+        act: () => page.click(DIE),
+        landed: () => page.waitForFunction((was) => document.querySelector('#solList').textContent !== was
+          && document.querySelectorAll('#solList .chip-m').length > 0
+          && [...document.querySelectorAll('#randCube, #randCubeTool')].every((d) => !d.disabled), rolled, { timeout: LIVENESS_MS }),
+      });
       assert.deepEqual(errors.map(String), [], 'the page threw');
     } finally {
       await context.close();
