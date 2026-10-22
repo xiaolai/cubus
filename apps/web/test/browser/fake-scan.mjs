@@ -11,16 +11,24 @@
 // refusal some 30–40 ms later and the race was lost in 6 of 25 runs, and in 11 geometry cases under load.
 //
 // So the camera's answer is waited for first. While it is outstanding the screen says it is opening the
-// camera (or loading the scanner, before the panel registers); any other sentence is the outcome — a
-// refusal, a slow-open notice, a camera that answered. That sentence changes BECAUSE the screen was
-// mounted, so the wait is not met by the screen being left or not yet drawn.
+// camera (or loading the scanner, before the panel registers); any other sentence is the outcome. That
+// sentence changes BECAUSE the screen was mounted, so the wait is not met by the screen being left or not
+// yet drawn.
+//
+// ONLY A REFUSED CAMERA WILL DO. A camera that ANSWERED keeps the panel scanning, and every report it makes
+// says `complete: false` — so a scan faked over a running camera is taken down by the next report, whenever
+// it lands. No wait makes that correct, so the helper refuses it loudly instead: the scan screen's camera row
+// carries `on` exactly while the panel reports a device (lib/screens/scan/camera-menu.js, `paintCameraRow`).
+// Test contexts grant no camera, so this is the case every suite is in; a suite that grants one must stop
+// the panel itself before faking anything.
 
 /** The words `#scanHow` holds while the panel's camera attempt has no outcome (lib/screens/scan.js). */
 const STILL_OPENING = /^(Opening the camera|Loading the scanner)/;
 
 /**
- * Resolves once the scan screen is up and the panel's camera attempt has an outcome. A suite that fakes ANY
- * panel event (`scan-complete`, `scan-progress`) waits here first, or the panel's own later report undoes it.
+ * Resolves once the scan screen is up and the panel's camera attempt was REFUSED; throws if the camera answered
+ * (see above). A suite that fakes ANY panel event (`scan-complete`, `scan-progress`) waits here first, or the
+ * panel's own later report undoes it.
  * @param {import('playwright').Page} page
  * @param {{ timeout?: number }} [options] the page's default bound otherwise
  */
@@ -29,6 +37,11 @@ export async function cameraSettled(page, options = {}) {
     const how = document.querySelector('.screen.active[data-screen="scan"] #scanHow');
     return how !== null && !new RegExp(opening).test(how.textContent.trim());
   }, STILL_OPENING.source, options);
+  const running = await page.evaluate(() => document.querySelector('.screen.active[data-screen="scan"] .scan-cam')?.classList.contains('on') === true);
+  if (running) {
+    throw new Error('fake-scan: the camera ANSWERED, so the panel is scanning and its next report would take a faked event down. '
+      + 'Fake only on a refused camera (a context granted no camera), or stop the panel first.');
+  }
 }
 
 /**
