@@ -150,8 +150,12 @@ test('initSolver is never called on the main thread, and its tables are never bu
   try {
     // Boot, a press of the die (a roll AND a solve, both through the pool) and a walk drawn.
     await page.click('#randCube');
-    await page.waitForFunction(() => document.querySelectorAll('.chip-m').length > 0, null);
-    await page.waitForTimeout(2500);
+    // The press is OVER, not merely drawn: the die is held from before the roll until the walk it loads
+    // is on screen (lib/screens/cube/die.js), so its walk listed with the die let go is the end of
+    // everything the press does on this thread — where an initSolver it caused would already have run.
+    // Home opened on a solved cube, which has no list, so the chips are this press's.
+    await page.waitForFunction(() => document.querySelectorAll('#solList .chip-m').length > 0
+      && document.querySelector('#randCube')?.disabled === false, null);
 
     const spy = await page.evaluate(() => ({ installed: window.__spyInstalled, calls: window.__initSolverCalls }));
     assert.equal(spy.installed, true, 'the spy never installed, so it proved nothing about initSolver');
@@ -211,9 +215,15 @@ test('an impossible cube says what is wrong with it, rather than blaming the sea
   const { page, context, errors } = await openHome();
   try {
     await page.evaluate(showOnHome(TWISTED_CORNER));
-    // Long enough that the OLD behaviour would have finished: eight escalations on a state the
-    // engine rejects before searching return immediately, so failWalk lands within a tick or two.
-    await page.waitForTimeout(2500);
+    // Until the screen has said SOMETHING about this cube: its note, or a count that has left
+    // "working…" — whichever this build produces. The OLD behaviour's failWalk lands there too (eight
+    // escalations on a state the engine rejects before searching return at once), so the checks below
+    // tell the two apart rather than a sleep that happened to outlast both.
+    await page.waitForFunction(() => {
+      if (document.querySelector('.screen.active[data-screen="home"] #unsolvableNote')) return true;
+      const count = document.querySelector('#moveCount')?.textContent ?? '';
+      return count !== '' && count !== 'working…' && count !== '—';
+    }, null);
 
     const shown = await page.evaluate(() => ({
       note: document.querySelector('#unsolvableNote')?.textContent?.trim() ?? null,
