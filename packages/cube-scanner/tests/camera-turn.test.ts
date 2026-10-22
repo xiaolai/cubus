@@ -94,6 +94,81 @@ describe('the camera gate is bounded', () => {
     expect(order).toEqual(['camera', 'camera', 'list']);
   });
 
+  /** A stream the platform grants late, whose track records being stopped. */
+  const lateCamera = (label: string) => {
+    const stopped: string[] = [];
+    const track = {
+      label,
+      getSettings: () => ({ deviceId: label }),
+      stop: () => stopped.push(label),
+      addEventListener: () => {},
+    };
+    return { stream: { getVideoTracks: () => [track], getTracks: () => [track] }, stopped };
+  };
+
+  it('a late answer after the bound, to an open that was cancelled: the stream is stopped and never shown', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const late = lateCamera('late');
+    vi.stubGlobal('document', { createElement: () => ({ getContext: () => ({}) }) });
+    vi.stubGlobal('navigator', {
+      mediaDevices: {
+        getUserMedia: () =>
+          new Promise((resolve) =>
+            setTimeout(() => resolve(late.stream), CAMERA_CALL_RELEASE_MS + 10_000),
+          ),
+        enumerateDevices: async () => [],
+      },
+    });
+    const v = video();
+    const controller = new AbortController();
+    const opening = openCamera(v, {}, controller.signal);
+    await vi.advanceTimersByTimeAsync(1000);
+    controller.abort();
+    await expect(opening).rejects.toMatchObject({ name: 'AbortError' });
+    await vi.advanceTimersByTimeAsync(CAMERA_CALL_RELEASE_MS); // the queue is released; the call still is not answered
+    expect(late.stopped).toEqual([]);
+    await vi.advanceTimersByTimeAsync(10_000); // the platform answers, late
+    expect(late.stopped).toEqual(['late']);
+    expect(v.srcObject).toBeNull();
+  });
+
+  it('a late answer after the bound, to an open still waiting: it gets its stream, once, while the call behind it went ahead', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const late = lateCamera('late');
+    const next = lateCamera('next');
+    let asked = 0;
+    vi.stubGlobal('document', { createElement: () => ({ getContext: () => ({}) }) });
+    vi.stubGlobal('navigator', {
+      mediaDevices: {
+        getUserMedia: () => {
+          asked += 1;
+          if (asked === 1)
+            return new Promise((resolve) =>
+              setTimeout(() => resolve(late.stream), CAMERA_CALL_RELEASE_MS + 10_000),
+            );
+          return Promise.resolve(next.stream);
+        },
+        enumerateDevices: async () => [],
+      },
+    });
+    const first = video();
+    const second = video();
+    const waiting = openCamera(first);
+    const behind = openCamera(second);
+    await vi.advanceTimersByTimeAsync(CAMERA_CALL_RELEASE_MS);
+    expect(asked).toBe(2); // released at the bound: the open behind did not wait for the late answer
+    expect((second as { srcObject: unknown }).srcObject).toBe(next.stream);
+    await behind;
+    await vi.advanceTimersByTimeAsync(10_000);
+    const source = await waiting;
+    expect(source.device.label).toBe('late');
+    expect((first as { srcObject: unknown }).srcObject).toBe(late.stream);
+    expect(late.stopped).toEqual([]);
+    expect(asked).toBe(2); // handed over once: the late answer asked nothing again
+  });
+
   it('a call that answers in time says nothing and holds the queue only as long as it takes', async () => {
     vi.useFakeTimers();
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
