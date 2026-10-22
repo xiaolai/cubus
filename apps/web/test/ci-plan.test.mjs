@@ -223,7 +223,7 @@ test('every skippable CI job is gated on an output the plan emits, and the alway
     .map((chunk) => chunk.split('\n').filter((line) => !/^\s*#/.test(line)).join('\n'))
     .filter((chunk) => /^\s*- /.test(chunk));
   const stepsNaming = (needle) => steps.filter((s) => s.includes(needle));
-  for (const needle of ['playwright install', 'xvfb-run', 'verify-icons.py', 'cube-scanner run check\n', 'gan-driver run check\n']) {
+  for (const needle of ['ci-browser-engines.sh', 'cubus-browser-debs', 'fc-match', 'xvfb-run', 'verify-icons.py', 'cube-scanner run check\n', 'gan-driver run check\n']) {
     const named = stepsNaming(needle);
     assert.ok(named.length > 0, `ts job no longer has a step containing "${needle.trim()}"`);
     for (const s of named) {
@@ -296,12 +296,71 @@ test('a browser download is bounded by a step timeout of its own, not by the tes
   // step-level bound well inside its job's, so a slow download fails as a download.
   const steps = CI.split(/\n(?=      - )/)
     .map((chunk) => chunk.split('\n').filter((line) => !/^\s*#/.test(line)).join('\n'))
-    .filter((step) => /playwright install/.test(step));
+    .filter((step) => /playwright install|ci-browser-engines\.sh/.test(step));
   assert.ok(steps.length > 0, 'no step installs browsers, so this check went blind');
   for (const step of steps) {
     const minutes = Number(/^\s+timeout-minutes: (\d+)/m.exec(step)?.[1]);
     assert.ok(minutes > 0 && minutes <= 15,
       `a browser install step has no step timeout of 15 minutes or less:\n${step}`);
+  }
+});
+
+// THE BROWSERS' UBUNTU PACKAGES COME THROUGH A DEB CACHE, NEVER STRAIGHT FROM THE MIRROR (2026-10-23).
+//
+// `playwright install --with-deps` downloaded ~116 MB of .debs from the runner's Ubuntu mirror on every run,
+// and twice on 2026-10-22 that mirror served them at 67.6 kB/s: a 29-minute step that cancelled the suites
+// (run 39781980729), then the step's own 10-minute bound firing (run 39832474206). The second instance made
+// it a class, so this holds the RELATION for every job that runs a browser suite, found by what it runs:
+// it restores the deb cache, installs through scripts/ci-browser-engines.sh (which points apt's archive
+// directory at the restored one), saves the cache, asserts the DejaVu fonts the geometry floors were
+// measured in, and only then runs the suites. And nothing in any workflow calls `playwright install` itself,
+// which is the bare mirror download this replaced.
+test('every job that runs a browser suite takes the browsers\' packages from the deb cache, not the mirror', () => {
+  const SCRIPT = 'scripts/ci-browser-engines.sh';
+  assert.ok(existsSync(`${ROOT}${SCRIPT}`), `${SCRIPT} is missing`);
+  const script = readFileSync(`${ROOT}${SCRIPT}`, 'utf8');
+  const code = (text) => text.split('\n').filter((line) => !/^\s*#/.test(line)).join('\n');
+
+  // The one directory, named the same way by the cache steps and by the script.
+  const DIR = '~/.cache/cubus-browser-debs';
+  const scriptCode = code(script);
+  assert.match(scriptCode, /\$\{BROWSER_DEBS:-\$HOME\/\.cache\/cubus-browser-debs\}/,
+    `${SCRIPT} keeps its debs somewhere other than ${DIR}, which the cache steps save and restore`);
+  assert.match(scriptCode, /Dir::Cache::Archives/, `${SCRIPT} does not point apt's archive directory at the cache`);
+  assert.match(scriptCode, /playwright install --with-deps webkit chromium/, `${SCRIPT} does not install both engines`);
+  assert.match(scriptCode, /trap '[^']*rm -f[^']*' EXIT/, `${SCRIPT} could leave its apt drop-in behind for later apt calls`);
+
+  for (const [name, text] of [['ci.yml', CI], ['release.yml', RELEASE]]) {
+    assert.doesNotMatch(code(text), /playwright install/,
+      `${name} runs \`playwright install\` itself, downloading the browsers' packages from the mirror`);
+  }
+
+  const jobs = [...jobBlocks(CI)].filter(([, block]) => /xvfb-run -a pnpm --filter cubus-web/.test(code(block)));
+  assert.ok(jobs.length >= 2, `found ${jobs.length} browser-suite jobs; ts and web-nightly both run them`);
+  for (const [name, block] of jobs) {
+    const steps = block.split(/\n(?=      - )/).map(code).filter((s) => /^\s*- /.test(s));
+    const at = (re, what) => {
+      const i = steps.findIndex((s) => re.test(s));
+      assert.ok(i >= 0, `${name} has no step that ${what}`);
+      return i;
+    };
+    const cacheStep = (verb) => new RegExp(
+      `uses: actions/cache/${verb}@[0-9a-f]{40} #[^\\n]*\\n(?:.*\\n)*?\\s+path: ${DIR.replace(/[.]/g, '\\.')}/\\*\\.deb\\n`);
+    const restore = at(cacheStep('restore'), `restores ${DIR} with actions/cache/restore pinned by SHA`);
+    const install = at(/ci-browser-engines\.sh/, `runs ${SCRIPT}`);
+    const save = at(cacheStep('save'), `saves ${DIR} with actions/cache/save pinned by SHA`);
+    const fonts = at(/fc-match[^\n]*sans-serif[\s\S]*DejaVu Sans/, 'asserts the default sans-serif is DejaVu Sans');
+    const suites = at(/xvfb-run -a pnpm --filter cubus-web/, 'runs the browser suites');
+    assert.ok(restore < install && install < save && save < suites && install < fonts && fonts < suites,
+      `${name} restores, installs, saves, checks the fonts and runs the suites out of order`);
+    assert.match(steps[install], /^\s+id: engines$/m, `${name}'s install step has no id the save can read`);
+    assert.match(steps[save], /steps\.engines\.outputs\.changed == 'true'/,
+      `${name} saves the cache whether or not its contents moved`);
+    // A COLD FILL IS RESUMABLE. On 2026-10-22 the mirror delivered ~28 MB of the 119 in the step's ten
+    // minutes (run 39841840349): a save that ran only on success would throw every finished .deb away,
+    // and the cache could never fill while the mirror stayed slow.
+    assert.match(steps[save], /!cancelled\(\)[^\n]*steps\.engines\.outcome == 'failure'/,
+      `${name} drops the .debs a timed-out install had already fetched, so a slow mirror can never be outrun`);
   }
 });
 
@@ -355,7 +414,7 @@ test('every nightly-tier suite is run by a CI job that fires on the schedule, an
     assert.ok(cond, `${name} has no job-level if:, so it runs on every push — the suite it holds is too slow for that`);
     assert.match(cond, /github\.event_name == 'schedule'/, `${name}'s if: does not admit the schedule`);
     assert.doesNotMatch(cond, /\bpush\b|pull_request|needs\.plan/, `${name}'s if: admits a push or a pull request`);
-    assert.match(block, /playwright install --with-deps webkit chromium/, `${name} does not install both engines`);
+    assert.match(block, /scripts\/ci-browser-engines\.sh/, `${name} does not install both engines through the deb cache`);
     assert.match(block, /xvfb-run -a pnpm --filter cubus-web/, `${name} runs the suites without a display`);
   }
   const on = CI.slice(CI.indexOf('\non:\n'), CI.indexOf('\npermissions:'));

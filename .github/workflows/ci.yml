@@ -193,15 +193,58 @@ jobs:
       - uses: ./.github/actions/apt-ubuntu-only
         if: needs.plan.outputs.full == 'true' || needs.plan.outputs.icons == 'true'
 
-      # BOUNDED ON ITS OWN, because the job's 45 minutes are the browser suites' budget. The step
-      # takes ~3 minutes; on 2026-10-22 the Ubuntu mirror served its packages at 67.6 kB/s and it
-      # took 29, so the suites were cancelled 13 minutes in with nothing failed — a slow mirror read
-      # as a cancelled test run. Ten minutes is three times its usual cost; past that the run fails
-      # HERE, naming the download, and a re-run is the honest answer.
+      # THE BROWSERS' UBUNTU PACKAGES COME FROM A DEB CACHE, NOT STRAIGHT FROM THE MIRROR (2026-10-23).
+      # `--with-deps` downloads ~116 MB of .debs from the runner's Ubuntu mirror, and on 2026-10-22 that
+      # mirror served them at 67.6 kB/s twice: runs 39781980729 (a 29-minute step, the suites
+      # cancelled) and 39832474206 (the bound below firing). scripts/ci-browser-engines.sh points apt's
+      # own archive directory at the restored .debs, so apt downloads only a package whose version moved
+      # since the last save, and usually none. apt still resolves against the live index and checks every
+      # cached file, so the cache can cost a download but never change what is installed. The key is never
+      # matched exactly: the newest entry is restored by prefix, and a new one is saved when the script
+      # reports that the set changed, OR when the install failed. A cold fill is resumable: apt moves each
+      # finished .deb out of partial/ as it lands, and on 2026-10-22 the mirror delivered ~28 MB of the
+      # 119 in the step's ten minutes (run 39841840349), so a save on success alone would throw that away
+      # and the cache could never fill while the mirror stayed slow.
+      #
+      # The browser builds are NOT cached. They come from Playwright's CDN, not the mirror that failed,
+      # they are about four times the size, and this repository's cache is already over its 10 GB budget,
+      # where every new entry evicts a Rust cache.
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: needs.plan.outputs.full == 'true'
+        with:
+          path: ~/.cache/cubus-browser-debs/*.deb
+          key: browser-debs-${{ runner.os }}-${{ runner.arch }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: browser-debs-${{ runner.os }}-${{ runner.arch }}-
+
+      # BOUNDED ON ITS OWN, because the job's 45 minutes are the browser suites' budget. A cold cache
+      # still downloads every package, and on 2026-10-22 a slow mirror read as a cancelled test run
+      # (29 minutes here, the suites cancelled 13 minutes in with nothing failed). Ten minutes is three
+      # times the uncached cost; past that the run fails HERE, naming the download.
       - name: cubus-web — browser engines for the geometry and scanner suites
+        id: engines
         if: needs.plan.outputs.full == 'true'
         timeout-minutes: 10
-        run: pnpm --filter cubus-web exec playwright install --with-deps webkit chromium
+        run: scripts/ci-browser-engines.sh
+
+      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: "!cancelled() && needs.plan.outputs.full == 'true' && (steps.engines.outcome == 'failure' || steps.engines.outputs.changed == 'true')"
+        with:
+          path: ~/.cache/cubus-browser-debs/*.deb
+          key: browser-debs-${{ runner.os }}-${{ runner.arch }}-${{ github.run_id }}-${{ github.run_attempt }}
+
+      # THE FONTS THE BROWSER SUITES DRAW WITH. The geometry floors were measured in DejaVu, which is
+      # this runner's default sans-serif and is NOT in the plain Playwright image (AGENTS.md §5): a layout
+      # that is green in another face is a different measurement. The digest names every installed face, so
+      # a change to the set shows up as a different log line rather than as a moved floor.
+      - name: fonts the browser suites draw with
+        if: needs.plan.outputs.full == 'true'
+        run: |
+          for family in sans-serif serif monospace system-ui; do
+            printf '%-10s %s\n' "$family" "$(fc-match "$family")"
+          done
+          echo "fc-list: $(fc-list | wc -l) faces, digest $(fc-list --format '%{file}\n' | sort | sha256sum | cut -c1-16)"
+          fc-match -f '%{family}\n' sans-serif | grep -qE '^DejaVu Sans(,|$)' \
+            || { echo "::error::the default sans-serif is not DejaVu Sans, the face the geometry floors were measured in"; exit 1; }
 
       # UNDER XVFB, because the scanner suite launches Chromium HEADED and a runner has no display.
       # Headed is not a preference there: headless Chromium substitutes a software GPU that is
@@ -260,7 +303,8 @@ jobs:
   # double, because this repository has measured the same work at 23 and 44 minutes on two runners
   # (the last-layer sweep, 2026-09-17). A liveness bound, not a performance assertion.
   #
-  # Both engines and xvfb, set up as `ts` sets them up and for the same reasons (see there).
+  # Both engines from the same deb cache, and xvfb, set up as `ts` sets them up and for the same
+  # reasons (see there).
   web-nightly:
     name: web — nightly browser suites (the mark gate, the Practice sweep)
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
@@ -276,9 +320,33 @@ jobs:
       - name: Install
         run: pnpm install --frozen-lockfile
       - uses: ./.github/actions/apt-ubuntu-only
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/cubus-browser-debs/*.deb
+          key: browser-debs-${{ runner.os }}-${{ runner.arch }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: browser-debs-${{ runner.os }}-${{ runner.arch }}-
       - name: cubus-web — browser engines for the nightly suites
+        id: engines
         timeout-minutes: 10 # as in `ts`: a slow mirror fails here, not as a cancelled suite
-        run: pnpm --filter cubus-web exec playwright install --with-deps webkit chromium
+        run: scripts/ci-browser-engines.sh
+      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: "!cancelled() && (steps.engines.outcome == 'failure' || steps.engines.outputs.changed == 'true')"
+        with:
+          path: ~/.cache/cubus-browser-debs/*.deb
+          key: browser-debs-${{ runner.os }}-${{ runner.arch }}-${{ github.run_id }}-${{ github.run_attempt }}
+      # THE FONTS THE BROWSER SUITES DRAW WITH. The geometry floors were measured in DejaVu, which is
+      # this runner's default sans-serif and is NOT in the plain Playwright image (AGENTS.md §5): a layout
+      # that is green in another face is a different measurement. The digest names every installed face, so
+      # a change to the set shows up as a different log line rather than as a moved floor.
+      - name: fonts the browser suites draw with
+        run: |
+          for family in sans-serif serif monospace system-ui; do
+            printf '%-10s %s\n' "$family" "$(fc-match "$family")"
+          done
+          echo "fc-list: $(fc-list | wc -l) faces, digest $(fc-list --format '%{file}\n' | sort | sha256sum | cut -c1-16)"
+          fc-match -f '%{family}\n' sans-serif | grep -qE '^DejaVu Sans(,|$)' \
+            || { echo "::error::the default sans-serif is not DejaVu Sans, the face the geometry floors were measured in"; exit 1; }
+
       - name: cubus-web — test:nightly (the browser suites too slow for every push)
         run: xvfb-run -a pnpm --filter cubus-web test:nightly
 
