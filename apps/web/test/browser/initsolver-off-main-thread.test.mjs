@@ -38,6 +38,10 @@ import { webkit } from 'playwright';
 import { pace } from '../browser-wait.mjs';
 import { freePort } from '../free-port.mjs';
 import { readAppSource } from '../app-source.mjs';
+import { LIVENESS_MS } from './harness.mjs';
+
+/** The watching window after a walk lands: about 2.5 s at 60 frames a second, the sleep it replaces. */
+const AFTER_FRAMES = 150;
 
 const SERVE = fileURLToPath(new URL('../../serve.mjs', import.meta.url));
 const app = readAppSource();
@@ -150,12 +154,21 @@ test('initSolver is never called on the main thread, and its tables are never bu
   try {
     // Boot, a press of the die (a roll AND a solve, both through the pool) and a walk drawn.
     await page.click('#randCube');
-    // The press is OVER, not merely drawn: the die is held from before the roll until the walk it loads
-    // is on screen (lib/screens/cube/die.js), so its walk listed with the die let go is the end of
-    // everything the press does on this thread — where an initSolver it caused would already have run.
-    // Home opened on a solved cube, which has no list, so the chips are this press's.
+    // The press is over: its walk listed (Home opened on a solved cube, which has no list, so the chips
+    // are this press's) and the die let go, which it is only once that walk is on screen.
     await page.waitForFunction(() => document.querySelectorAll('#solList .chip-m').length > 0
       && document.querySelector('#randCube')?.disabled === false, null);
+    // Then a WATCHING WINDOW, counted in frames the page presents from that moment: work the walk sets off
+    // after it lands — the live distance, the next roll, a timer — could still reach cubejs here, and a
+    // search started then is the one this case exists to catch (verify pass, 2026-10-22: removing the old
+    // 2500 ms sleep let a mutant that searches 500 ms after landing pass). Frames rather than a sleep, so
+    // a page that is slow to draw gets the same window, never a shorter one.
+    await page.evaluate((n) => {
+      window.__framesAfter = 0;
+      const tick = () => { window.__framesAfter += 1; if (window.__framesAfter < n) requestAnimationFrame(tick); };
+      requestAnimationFrame(tick);
+    }, AFTER_FRAMES);
+    await page.waitForFunction((n) => window.__framesAfter >= n, AFTER_FRAMES, { timeout: LIVENESS_MS });
 
     const spy = await page.evaluate(() => ({ installed: window.__spyInstalled, calls: window.__initSolverCalls }));
     assert.equal(spy.installed, true, 'the spy never installed, so it proved nothing about initSolver');
