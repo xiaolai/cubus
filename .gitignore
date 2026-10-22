@@ -120,3 +120,9 @@ CLAUDE.md
 # Where scripts/check-on-clone.sh parks gitignored dirs for the length of a run. A fixed path so
 # an interrupted run is recoverable; the script empties it on the next start.
 .check-on-clone-stash/
+
+# AI tooling: machine-local, written wherever the tools run, never project source. Bare
+# names, not rules anchored to this directory. `.cc-suite/` is ignored whole, overriding the
+# file-by-file list in the cc-suite block above: nothing under it is tracked, and the repo-init gate
+# fails a tracked one. `.codex/`, `.cc-suite.md` and `CLAUDE.md` already have rules above.
+.cc-suite/
