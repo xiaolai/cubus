@@ -447,21 +447,40 @@ const WALK_FRAMES = `(() => {
 })()`;
 
 /**
- * Every frame from `act` until `landed` says its walk is on screen, and 30 frames after, held to both MUST-NOTs: no
- * count beside an empty list, and no cube at a size other than the one it settles at. `waited` asks that some frame
- * showed the wait itself — only where the walk is searched for long enough that a frame must fall inside it.
+ * HOW LONG A REQUEST TO THE APP'S WORKERS IS HELD while a phase below runs (`HOLD_WORKERS`). A Restore stop's route and a
+ * roll can answer inside the frame they were asked in, and then no frame ever shows the wait — so a phase passed with
+ * the waiting list's shape reverted (verify pass, 2026-10-22). Holding the requests is the test's own doing: the app
+ * is unchanged, and a request that lands late is one a slow machine sends anyway.
  */
-async function walkLandsWhole(page, fixture, { what, screen, act, landed, waited = false }) {
+const HOLD_MS = 400;
+const HOLD_WORKERS = () => {
+  window.__holdWorkerMs = 0;
+  const post = Worker.prototype.postMessage;
+  Worker.prototype.postMessage = function held(...args) {
+    const ms = window.__holdWorkerMs;
+    if (!ms) return post.apply(this, args);
+    setTimeout(() => post.apply(this, args), ms);
+    return undefined;
+  };
+};
+
+/**
+ * Every frame from `act` until `landed` says its walk is on screen, and 30 frames after, held to both MUST-NOTs: no
+ * count beside an empty list, and no cube at a size other than the one it settles at — and to having SHOWN the wait:
+ * at least one frame before the list, or the phase proves nothing about the frames it exists to check. The app's worker
+ * requests are held `HOLD_MS` while it runs, so every path waits on the paper.
+ */
+async function walkLandsWhole(page, fixture, { what, screen, act, landed }) {
   await page.evaluate(WALK_FRAMES);
+  await page.evaluate((ms) => { window.__holdWorkerMs = ms; }, HOLD_MS);
   await act();
   await landed();
+  await page.evaluate(() => { window.__holdWorkerMs = 0; });
   const frames = (await framesAfter(page, 30, '__walkFrames', '__walkStop')).filter((f) => f.screen === screen);
   const where = `${fixture.name}, ${what}`;
   assert.ok(frames.length >= 30, `${where}: only ${frames.length} frames sampled — the change was not observed`);
-  if (waited) {
-    assert.ok(frames.some((f) => f.chips === 0),
-      `${where}: no frame before the list — the walk was not searched for, so the wait was never on the paper`);
-  }
+  assert.ok(frames.some((f) => f.chips === 0),
+    `${where}: no frame before the list — the wait was never on the paper, so this phase checked nothing about it`);
   const settled = frames.at(-1);
   assert.ok(settled.slot && settled.canvas, `${where}: the settled frame has no cube`);
   const sizeOff = (a, b) => !a || Math.abs(a.w - b.w) > 0.5 || Math.abs(a.h - b.h) > 0.5;
@@ -477,9 +496,15 @@ async function walkLandsWhole(page, fixture, { what, screen, act, landed, waited
 /** The visible die: the twin's in landscape, the cube card's tool in portrait. */
 const DIE = '#randCube:visible, #randCubeTool:visible';
 
+/** Take the roll the app has waiting (lib/scramble-roll.js), through the app's own door, so the next roll is made on
+ *  demand — the path of a press that comes before the next roll is ready. Called inside a phase, once its requests are
+ *  held: the pre-roll that taking one starts is then held too, so it cannot be ready again before the press. */
+const takeWaitingRoll = (page) => page.evaluate(async () => { const m = await import('/lib/scramble-roll.js'); void m.randomScramble(); });
+
 for (const fixture of HOME_SCAN_FIXTURES) {
   test(`a walk lands whole — count, list and the cube's size together — after a scan, a stop and a roll: ${fixture.name}`, async () => {
     const context = await browser.newContext({ viewport: { width: fixture.width, height: fixture.height }, hasTouch: fixture.touch === true });
+    await context.addInitScript(HOLD_WORKERS);
     const page = await context.newPage();
     pace(page);
     const errors = [];
@@ -497,7 +522,7 @@ for (const fixture of HOME_SCAN_FIXTURES) {
 
       // HOME AFTER A SCAN, from the navigation: the walk's list, on the screen asked for — only this walk draws it.
       await walkLandsWhole(page, fixture, {
-        what: 'Home after a scan', screen: 'home', waited: true,
+        what: 'Home after a scan', screen: 'home',
         act: () => page.evaluate(() => { location.hash = '#/home'; }),
         landed: () => page.waitForSelector('.screen.active[data-screen="home"] #solList .chip-m', { timeout: LIVENESS_MS }),
       });
@@ -518,10 +543,10 @@ for (const fixture of HOME_SCAN_FIXTURES) {
         }, [stop, said], { timeout: LIVENESS_MS }),
       });
 
-      // SCRAMBLE, from its navigation: the screen rolls on the way in.
+      // SCRAMBLE, from its navigation: the screen rolls on the way in — on demand, its waiting roll taken first.
       await walkLandsWhole(page, fixture, {
         what: 'Scramble on the way in', screen: 'scramble',
-        act: () => page.evaluate(() => { location.hash = '#/scramble'; }),
+        act: async () => { await takeWaitingRoll(page); await page.evaluate(() => { location.hash = '#/scramble'; }); },
         landed: () => page.waitForFunction(() => document.querySelector('.screen.active[data-screen="scramble"] #solList .chip-m')
           && [...document.querySelectorAll('#randCube, #randCubeTool')].every((d) => !d.disabled), null, { timeout: LIVENESS_MS }),
       });
@@ -530,7 +555,7 @@ for (const fixture of HOME_SCAN_FIXTURES) {
       const rolled = await page.textContent('#solList');
       await walkLandsWhole(page, fixture, {
         what: 'a roll on Scramble', screen: 'scramble',
-        act: () => page.click(DIE),
+        act: async () => { await takeWaitingRoll(page); await page.click(DIE); },
         landed: () => page.waitForFunction((was) => document.querySelector('#solList').textContent !== was
           && document.querySelectorAll('#solList .chip-m').length > 0
           && [...document.querySelectorAll('#randCube, #randCubeTool')].every((d) => !d.disabled), rolled, { timeout: LIVENESS_MS }),
