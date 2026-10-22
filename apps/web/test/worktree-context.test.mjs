@@ -7,10 +7,15 @@
 // for days; it failed `no-dangling-pointers` for four plans that existed; and a `cp` of one copy over
 // the other destroyed four rows permanently, because an untracked file has no history to restore from.
 //
-// The fix is structural rather than a discipline: every path in scripts/worktree-context.txt — dev-docs,
-// every AGENTS.md with the CLAUDE.md importing it, .mcp.json — is a symlink to the main checkout's,
+// The fix is structural rather than a discipline: every path in scripts/worktree-context.txt — every
+// AGENTS.md with the CLAUDE.md importing it, .codex, .mcp.json — is a symlink to the main checkout's,
 // made by scripts/link-worktree-context.sh, so no two can differ. This is the assertion that says so —
 // the rule's other half, because a rule nothing enforces is a preference.
+//
+// dev-docs is no longer linked at all (2026-10-23): it is a separate repository BESIDE the main
+// checkout, and every reader resolves it through git's common directory (scripts/dev-docs-dir.mjs).
+// The last two cases hold that: every worktree resolves the same notes, and no checkout keeps a copy
+// of its own that nothing would read.
 //
 // SKIPS, NEVER PASSES, when there is no second worktree to check: in CI there is one checkout and
 // nothing to compare, and a check that quietly passes on an empty set is one change from checking
@@ -22,6 +27,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { WORKTREE_CONTEXT } from './fixtures/worktree-context.mjs';
+import { DEV_DOCS, devDocsDir } from '../../../scripts/dev-docs-dir.mjs';
 
 const REPO = fileURLToPath(new URL('../../../', import.meta.url));
 
@@ -98,4 +104,27 @@ test('every agent rule file git ignores in this checkout is in the worktree mani
   const unlisted = ruleFiles.filter((f) => !SHARED.includes(f));
   assert.deepEqual(unlisted, [], 'add these to scripts/worktree-context.txt so every worktree links them');
   t.diagnostic(`${ruleFiles.length} agent rule file(s), all in the manifest`);
+});
+
+// THE NOTES ARE ONE DIRECTORY FROM EVERY CHECKOUT. A worktree's parent is worktrees/, so a reader that
+// looked beside its OWN checkout would find no notes there and skip every dev-docs check in silence.
+test('every worktree resolves the same dev-docs as this checkout', (t) => {
+  const trees = worktrees();
+  if (trees === null) return t.skip('git could not be asked for the worktree list');
+  const others = trees.filter((dir) => existsSync(dir) && realpathSync(dir) !== realpathSync(REPO));
+  if (others.length === 0) return t.skip('only one live worktree, so there is no second resolution to compare');
+  const wrong = others.map((dir) => [dir, devDocsDir(dir)]).filter(([, at]) => at !== DEV_DOCS);
+  assert.deepEqual(wrong, [], `every checkout must find the notes at ${DEV_DOCS}`);
+  t.diagnostic(`${others.length} other worktree(s) resolve ${DEV_DOCS}`);
+});
+
+// A dev-docs INSIDE a checkout is a leftover of the old layout (a link or a copy made before
+// 2026-10-23): no reader looks there any more, so whatever is written into it is lost to every gate.
+test('no checkout keeps a dev-docs of its own', (t) => {
+  const trees = worktrees();
+  if (trees === null) return t.skip('git could not be asked for the worktree list');
+  const live = trees.filter((dir) => existsSync(dir));
+  assert.ok(live.length > 0, 'no live worktree, not even this one, so this check went blind');
+  const inside = live.filter((dir) => existsSync(join(dir, 'dev-docs')));
+  assert.deepEqual(inside, [], `the notes live at ${DEV_DOCS}; merge anything unique out of these, then remove them`);
 });

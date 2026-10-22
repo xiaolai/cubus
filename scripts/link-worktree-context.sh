@@ -3,11 +3,15 @@
 #
 #   scripts/link-worktree-context.sh <worktree>
 #
-# WHY. The notes (dev-docs/), the rule files (every AGENTS.md and the CLAUDE.md importing it) and the
-# MCP registrations are gitignored, so `git worktree add` gives a worktree none of them, and a copy
-# made by hand drifts silently while three gates read it. A LINK cannot drift. The paths are the ones
-# scripts/worktree-context.txt names — the one list, which apps/web/test/worktree-context.test.mjs
-# holds every worktree to.
+# WHY. The rule files (every AGENTS.md and the CLAUDE.md importing it), .codex and the MCP
+# registrations are gitignored, so `git worktree add` gives a worktree none of them, and a copy made
+# by hand drifts silently. A LINK cannot drift. The paths are the ones scripts/worktree-context.txt
+# names — the one list, which apps/web/test/worktree-context.test.mjs holds every worktree to.
+#
+# The workspace's scripts/new-worktree.sh (beside main/, not in this repository) runs this right after
+# it creates a worktree under ../worktrees/<name>; run it by hand only for a worktree made another way.
+# The notes (dev-docs) are not linked: they sit beside the main checkout and every reader finds them
+# through git's common directory (scripts/dev-docs-dir.mjs).
 #
 # WHAT IT REFUSES. A copy is never overwritten unless its content equals main's: a `cp` of one feature
 # ledger over another once destroyed four rows for good, because an untracked file has no history.

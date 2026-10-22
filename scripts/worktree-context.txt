@@ -11,9 +11,14 @@
 #   - scripts/check-on-clone.sh   hides each path, since a clone has none of them
 #
 # A new area rule file is added here, as its AGENTS.md and the CLAUDE.md importing it.
+#
+# NOT here: dev-docs. Since 2026-10-23 the notes are a separate repository BESIDE the main checkout
+# (<workspace>/dev-docs, see the workspace AGENTS.md), and every reader finds them through git's
+# common directory (scripts/dev-docs-dir.mjs), so a worktree reaches the same notes with no link.
 
-# The maintainer's notes and decision record.
-dev-docs
+# The rulebook. In the main checkout both are symlinks to the workspace's AGENTS.md (../AGENTS.md);
+# the workspace's scripts/new-worktree.sh gives a worktree its own ../../AGENTS.md links, which
+# resolve to the same file and so count as linked here.
 AGENTS.md
 CLAUDE.md
 
