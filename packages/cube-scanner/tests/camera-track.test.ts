@@ -273,11 +273,11 @@ describe('listCameras', () => {
     ]);
   });
 
-  // NEVER WHILE THE CAMERA IS BEING ASKED FOR (2026-10-22). The scan screen's camera menu listed cameras as it
-  // mounted, while the panel's autostart `getUserMedia` was still pending, and a page closed with BOTH
-  // pending aborts WPE WebKit's UI process: in the Playwright noble image, a bare page with the two pending
-  // aborted MiniBrowser on its first close, every time, and either alone never did (6 of 6 each). Before
-  // permission the list is placeholders this function drops anyway, so waiting costs nothing.
+  // NEVER TOGETHER WITH A CAMERA REQUEST (2026-10-22, made precise 2026-10-23). In WPE WebKit a page closed
+  // right after asking for the device list and THEN the camera, both pending, aborts the UI process: 10 of 10
+  // in the Playwright noble image. Camera first, either alone, or closed one round trip later: 0 of 10 each.
+  // The scan screen's camera menu asked for the list 1–5 ms before the panel's autostart asked for the camera.
+  // Before permission the list is placeholders this function drops anyway, so waiting costs nothing.
   describe('waits for a pending camera request before asking for the list', () => {
     const video = () => ({ srcObject: null, play: async () => {} }) as unknown as HTMLVideoElement;
     const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
