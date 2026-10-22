@@ -3281,7 +3281,7 @@ function describeTrack(track) {
   };
 }
 async function listCameras() {
-  const devices = await navigator.mediaDevices.enumerateDevices();
+  const devices = await inTurn(() => navigator.mediaDevices.enumerateDevices());
   return devices.filter((d) => d.kind === "videoinput").filter((d) => d.deviceId !== "").map((d, i) => ({ deviceId: d.deviceId, label: d.label || `Camera ${i + 1}` }));
 }
 function raceAbort(promise, signal) {
@@ -3314,8 +3314,20 @@ function videoConstraints(opts) {
   constraints.height = { ideal: opts.height ?? IDEAL_HEIGHT };
   return constraints;
 }
+var turn = Promise.resolve();
+function inTurn(ask) {
+  const mine = turn.then(ask);
+  turn = mine.then(
+    () => void 0,
+    () => void 0
+  );
+  return mine;
+}
 async function acquireStream(constraints, signal) {
-  const asked = navigator.mediaDevices.getUserMedia(constraints);
+  const asked = inTurn(() => {
+    if (signal?.aborted) return Promise.reject(abortError());
+    return navigator.mediaDevices.getUserMedia(constraints);
+  });
   if (signal) {
     void asked.then(
       (stream) => {

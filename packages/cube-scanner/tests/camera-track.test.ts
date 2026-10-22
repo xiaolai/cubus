@@ -216,6 +216,8 @@ describe('openCamera — a cancellation while the browser is still asking', () =
     } as unknown as HTMLVideoElement;
     const controller = new AbortController();
     const opening = openCamera(video, {}, controller.signal);
+    // Let the request reach the platform: an open cancelled before its turn never asks at all.
+    await new Promise((resolve) => setTimeout(resolve, 0));
     controller.abort();
     await expect(opening).rejects.toMatchObject({ name: 'AbortError' });
     // Nothing was granted yet, so nothing is stopped yet…
@@ -269,6 +271,169 @@ describe('listCameras', () => {
       { deviceId: 'a', label: 'Cam A' },
       { deviceId: 'b', label: 'Camera 2' },
     ]);
+  });
+
+  // NEVER WHILE THE CAMERA IS BEING ASKED FOR (2026-10-22). The scan screen's camera menu listed cameras as it
+  // mounted, while the panel's autostart `getUserMedia` was still pending, and a page closed with BOTH
+  // pending aborts WPE WebKit's UI process: in the Playwright noble image, a bare page with the two pending
+  // aborted MiniBrowser on its first close, every time, and either alone never did (6 of 6 each). Before
+  // permission the list is placeholders this function drops anyway, so waiting costs nothing.
+  describe('waits for a pending camera request before asking for the list', () => {
+    const video = () => ({ srcObject: null, play: async () => {} }) as unknown as HTMLVideoElement;
+    const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
+    /** The i-th entry, or a failure naming it: a missing request is a finding, not an undefined to skip. */
+    const nth = <T>(items: T[], i: number): T => {
+      const item = items[i];
+      if (item === undefined) throw new Error(`no entry ${i}: the platform was not asked`);
+      return item;
+    };
+    // Whatever a test leaves unanswered is answered after it: the module remembers pending requests, and one
+    // left pending by a failed test would hold every later list in this file.
+    const leftOpen: Array<() => void> = [];
+    afterEach(() => {
+      for (const settle of leftOpen.splice(0)) settle();
+    });
+    const platform = ({ holdList = false } = {}) => {
+      const answers: Array<{ refuse: () => void }> = [];
+      const lists: Array<() => void> = [];
+      let listed = 0;
+      vi.stubGlobal('navigator', {
+        mediaDevices: {
+          getUserMedia: () =>
+            new Promise((_, reject) => {
+              const refuse = () => reject(new DOMException('no', 'NotAllowedError'));
+              answers.push({ refuse });
+              leftOpen.push(refuse);
+            }),
+          enumerateDevices: () => {
+            listed += 1;
+            const list = [{ kind: 'videoinput', deviceId: 'a', label: 'Cam A' }];
+            if (!holdList) return Promise.resolve(list);
+            return new Promise((resolve) => {
+              lists.push(() => resolve(list));
+              leftOpen.push(() => resolve(list));
+            });
+          },
+        },
+      });
+      return { answers, lists, listed: () => listed, asked: () => answers.length };
+    };
+
+    // The other order, which is the one the scan screen actually ran in: the menu's list was asked for 1–5 ms
+    // BEFORE the panel's camera, and WPE held the list until the camera was answered (traced 2026-10-22).
+    it('asks for no camera while a list is still being read, then asks', async () => {
+      const p = platform({ holdList: true });
+      const list = listCameras();
+      await tick();
+      const opening = openCamera(video()).catch(() => {});
+      await tick();
+      expect(p.asked()).toBe(0);
+      nth(p.lists, 0)();
+      await list;
+      await tick();
+      expect(p.asked()).toBe(1);
+      nth(p.answers, 0).refuse();
+      await opening;
+    });
+
+    it('never asks for a camera whose open was cancelled while it waited its turn', async () => {
+      const p = platform({ holdList: true });
+      const list = listCameras();
+      await tick();
+      const controller = new AbortController();
+      const opening = openCamera(video(), {}, controller.signal);
+      controller.abort();
+      await expect(opening).rejects.toMatchObject({ name: 'AbortError' });
+      nth(p.lists, 0)();
+      await list;
+      await tick();
+      expect(p.asked()).toBe(0);
+    });
+
+    it('asks for no list until the request is answered, then asks once', async () => {
+      const p = platform();
+      const opening = openCamera(video()).catch(() => {});
+      const list = listCameras();
+      await tick();
+      expect(p.listed()).toBe(0);
+      nth(p.answers, 0).refuse();
+      await opening;
+      expect(await list).toEqual([{ deviceId: 'a', label: 'Cam A' }]);
+      expect(p.listed()).toBe(1);
+    });
+
+    it("waits for the PLATFORM's request, not the opener's: a cancelled open leaves the browser still asking", async () => {
+      const p = platform();
+      const controller = new AbortController();
+      const opening = openCamera(video(), {}, controller.signal).catch(() => {});
+      await tick(); // the browser is asking now
+      controller.abort();
+      await opening;
+      const list = listCameras();
+      await tick();
+      expect(p.listed()).toBe(0);
+      nth(p.answers, 0).refuse();
+      await list;
+      expect(p.listed()).toBe(1);
+    });
+
+    it('never has a camera request and a list outstanding together, in any order they are asked', async () => {
+      // The relation itself, rather than one ordering: the platform stub counts what is outstanding at every
+      // call it receives, and each interleaving below is driven to the end.
+      for (const order of [
+        ['open', 'list', 'open'],
+        ['list', 'open', 'list'],
+        ['open', 'open', 'list', 'list'],
+      ]) {
+        let cams = 0;
+        let lists = 0;
+        const overlaps: string[] = [];
+        const settle: Array<() => void> = [];
+        vi.stubGlobal('navigator', {
+          mediaDevices: {
+            getUserMedia: () => {
+              if (lists > 0) overlaps.push(`camera asked with ${lists} list(s) out`);
+              cams += 1;
+              return new Promise((_, reject) => {
+                const done = () => {
+                  cams -= 1;
+                  reject(new DOMException('no', 'NotAllowedError'));
+                };
+                settle.push(done);
+                leftOpen.push(done);
+              });
+            },
+            enumerateDevices: () => {
+              if (cams > 0) overlaps.push(`list asked with ${cams} camera request(s) out`);
+              lists += 1;
+              return new Promise((resolve) => {
+                const done = () => {
+                  lists -= 1;
+                  resolve([]);
+                };
+                settle.push(done);
+                leftOpen.push(done);
+              });
+            },
+          },
+        });
+        const calls = order.map((k) =>
+          k === 'open' ? openCamera(video()).catch(() => {}) : listCameras(),
+        );
+        for (let i = 0; i < order.length; i++) {
+          await tick();
+          settle.shift()?.();
+        }
+        await Promise.all(calls);
+        expect({ order, overlaps }).toEqual({ order, overlaps: [] });
+      }
+    });
+
+    it('asks at once when nothing is pending', async () => {
+      const p = platform();
+      await listCameras();
+      expect(p.listed()).toBe(1);
+    });
   });
 
   it('numbers a lone unlabelled camera 1, not 2', async () => {

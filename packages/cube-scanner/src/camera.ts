@@ -225,7 +225,7 @@ export function describeTrack(
  * granted, so call this after a first `openCamera` for named entries (e.g. two webcams).
  */
 export async function listCameras(): Promise<CameraDevice[]> {
-  const devices = await navigator.mediaDevices.enumerateDevices();
+  const devices = await inTurn(() => navigator.mediaDevices.enumerateDevices());
   return (
     devices
       .filter((d) => d.kind === 'videoinput')
@@ -286,6 +286,29 @@ export function videoConstraints(opts: CameraOptions): MediaTrackConstraints {
 }
 
 /**
+ * The platform's camera calls — `getUserMedia` and `enumerateDevices` — ONE AT A TIME, in the order asked.
+ *
+ * WHY (2026-10-22). The scan screen's camera menu listed cameras as it mounted, 1–5 ms before the panel's
+ * autostart asked for the camera, and WPE WebKit held the list until the camera was answered — so both were
+ * outstanding across `load`, and a page closed with BOTH pending aborts WPE's UI process. In the Playwright
+ * noble image a bare page with the two pending aborted MiniBrowser on its first close, every time; either
+ * alone never did (6 of 6 each); the scan screen closed at `load` aborted it 3 of 3. A wait on one side only
+ * did not hold: the list was asked FIRST. So every call takes its turn, and a call waits for the platform's
+ * own answer to the one before — not a caller's abortable race of it, since a cancelled open leaves the
+ * browser still asking. Nothing is lost: before permission the list is placeholders, which it drops; a
+ * list asked while a permission prompt stays open waits for it, and would only have listed placeholders.
+ */
+let turn: Promise<unknown> = Promise.resolve();
+function inTurn<T>(ask: () => Promise<T>): Promise<T> {
+  const mine = turn.then(ask);
+  turn = mine.then(
+    () => undefined,
+    () => undefined,
+  );
+  return mine;
+}
+
+/**
  * Ask the platform for the camera, racing the request against `signal`.
  *
  * RACED, AND THE LATE STREAM IS STOPPED (2026-09-21). The request was awaited bare, so a `stop()`
@@ -299,7 +322,11 @@ async function acquireStream(
   constraints: MediaStreamConstraints,
   signal: AbortSignal | undefined,
 ): Promise<MediaStream> {
-  const asked = navigator.mediaDevices.getUserMedia(constraints);
+  // An open cancelled while it waited its turn never reaches the platform at all.
+  const asked = inTurn(() => {
+    if (signal?.aborted) return Promise.reject(abortError());
+    return navigator.mediaDevices.getUserMedia(constraints);
+  });
   if (signal) {
     void asked.then(
       (stream) => {
