@@ -148,27 +148,36 @@ export async function launchBrowser(engine, options = {}) {
   return guard(browser);
 }
 
-/** What a disconnect must not reach into: data a call answers with, not an object that makes calls. */
-const isData = (value) => Array.isArray(value) || ArrayBuffer.isView(value) || value instanceof Error
-  || value instanceof Promise || [Object.prototype, null].includes(Object.getPrototypeOf(value));
+/** One of Playwright's channel objects: a browser, context, page, frame, request, response or handle. */
+const isChannel = (value) => value !== null && typeof value === 'object'
+  && typeof value._guid === 'string' && '_connection' in value;
+/**
+ * Whether `value` is one of Playwright's own objects, the only thing the disconnect guard wraps: a channel
+ * object, or a helper that holds one in its own `_` field (a locator or frame locator holds `_frame`; the
+ * keyboard, mouse and touchscreen hold `_page`; the clock holds `_browserContext`). Told by SHAPE, because
+ * the class names are the bundler's (`_Page`, `Keyboard2`). A value a call ANSWERS with — a Date, a RegExp,
+ * a URL, anything `evaluate` returns — is neither, and is left exactly as it came (measured 2026-10-23).
+ */
+const isPlaywright = (value) => isChannel(value)
+  || (value !== null && typeof value === 'object' && !Array.isArray(value)
+    && Object.keys(value).some((key) => key.startsWith('_') && isChannel(value[key])));
 
 /**
  * Make every call on `browser`, and on anything it hands out, fail once the browser has disconnected.
  * Returns the function that guards one object, for the pages the context hook meets first.
  *
- * WHY. WPE's `MiniBrowser` aborted on its own in the noble image (closing a context during the scan
- * screen's camera request, 2026-10-22) and a `context.newPage()` in flight then never settled — still
+ * WHY. WPE's `MiniBrowser` aborted on its own in the noble image (a page closed right after asking for the
+ * device list and then the camera, both pending — packages/cube-scanner/src/camera.ts, 2026-10-22) and a `context.newPage()` in flight then never settled — still
  * pending minutes after the process had exited and `disconnected` had fired — while every timer in the
  * suite went on waiting for it. So each call RACES the disconnect: in flight, it rejects the moment the
  * browser goes; made after, it rejects at once. The message names the disconnect, so a test fails where
  * the browser went and says so.
  *
- * WHAT IS GUARDED is found by shape, because Playwright's class names are its bundler's (`_Page`,
- * `Keyboard2`): the browser, every object a guarded method returns or resolves to that is a class instance
- * rather than data (a context, page, frame, locator, element handle, response), and a guarded object's own
- * fields of that kind (`page.keyboard`, `page.mouse`). Names starting `_` are Playwright's internals and
- * are left alone. A call that answers something other than a promise passes through untouched, so `on`,
- * `url()` and `locator()` behave as before.
+ * WHAT IS GUARDED is Playwright's own objects and nothing else (`isPlaywright`): the browser, every one a
+ * guarded call returns or resolves to — directly, or as an element of an array (`page.$$`, `locator.all()`)
+ * — and a guarded object's own fields of that kind (`page.keyboard`, `page.mouse`). Data a call answers
+ * with is never touched. Names starting `_` are Playwright's internals and are left alone. A call that
+ * answers something other than a promise passes through, so `on`, `url()` and `locator()` behave as before.
  */
 function raceDisconnect(browser, engine) {
   let fail;
@@ -212,14 +221,18 @@ function raceDisconnect(browser, engine) {
     };
   };
   const guard = (target) => {
-    if (target === null || typeof target !== 'object' || isData(target) || guarded.has(target)) return target;
+    if (Array.isArray(target)) {
+      for (const item of target) guard(item);
+      return target;
+    }
+    if (!isPlaywright(target) || guarded.has(target)) return target;
     guarded.add(target);
     const own = Object.getOwnPropertyNames(target).filter((name) => !name.startsWith('_'));
     for (const name of own) {
       const d = Object.getOwnPropertyDescriptor(target, name);
       if (!('value' in d)) continue; // a getter is read as it is
       if (typeof d.value === 'function') wrap(target, name, d.value);
-      else guard(d.value);
+      else if (isPlaywright(d.value)) guard(d.value);
     }
     for (const name of methodsOf(Object.getPrototypeOf(target))) {
       if (!Object.hasOwn(target, name)) wrap(target, name, target[name]);

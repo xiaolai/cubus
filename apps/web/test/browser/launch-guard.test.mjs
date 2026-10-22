@@ -148,12 +148,18 @@ test('a browser that disconnects fails every call in flight on what it handed ou
     const page = await context.newPage();
     await page.setContent('<p id="x">a</p>');
     const handle = await page.$('#x');
+    const [listed] = await page.$$('#x');
+    const waited = await page.waitForSelector('#x');
+    const made = await page.evaluateHandle(() => document.body);
     const never = () => new Promise(() => {});
     const inFlight = {
       'page.evaluate': page.evaluate(never),
       'frame.evaluate': page.mainFrame().evaluate(never),
       'locator.evaluate': page.locator('#x').evaluate(never),
       'elementHandle.evaluate': handle.evaluate(never),
+      'a handle from page.$$, evaluate': listed.evaluate(never),
+      'a handle from waitForSelector, evaluate': waited.evaluate(never),
+      'a handle from evaluateHandle, evaluate': made.evaluate(never),
       'page.waitForFunction': page.waitForFunction(() => false, null, { timeout: 0 }),
       'locator.waitFor': page.locator('#never').waitFor({ timeout: 0 }),
     };
@@ -192,5 +198,21 @@ test('a browser that disconnects fails every call in flight on what it handed ou
     assert.ok(said.some((s) => s.includes('disconnected')), `the disconnect was not said: ${JSON.stringify(said)}`);
   } finally {
     await own.close().catch(() => {});
+  }
+});
+
+// WHAT THE GUARD MUST NOT TOUCH: a value a call answers with. A Date, a RegExp or a URL that `evaluate` returns
+// is the page's data; the guard once gave each its own wrapped methods, and a strict deep-equal with the plain
+// value then failed (verifier, 2026-10-23). Only Playwright's own objects are guarded.
+test('values a call answers with are left as they are: a Date, a RegExp and a URL deep-equal the plain ones', async () => {
+  const context = await browser.newContext();
+  try {
+    const page = await context.newPage();
+    const got = await page.evaluate(() => ({ d: new Date(0), r: /a+/g, u: new URL('http://example.test/p?q=1') }));
+    assert.deepStrictEqual(got, { d: new Date(0), r: /a+/g, u: new URL('http://example.test/p?q=1') });
+    assert.deepStrictEqual(await page.evaluate(() => new Date(86_400_000)), new Date(86_400_000));
+    assert.deepStrictEqual(Object.getOwnPropertyNames(await page.evaluate(() => new Date(0))), []);
+  } finally {
+    await context.close();
   }
 });
