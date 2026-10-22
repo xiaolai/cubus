@@ -16,6 +16,11 @@
 # for its own founding case is worse than no gate, because it is believed. Deciding statically
 # whether a script breaks without a directory amounts to running it — so this runs it.
 #
+# WHERE THE NOTES ARE. Since 2026-10-23 dev-docs is not in the checkout at all: it is a separate
+# repository BESIDE the main checkout (<workspace>/dev-docs), and every reader finds it through git's
+# common directory (scripts/dev-docs-dir.mjs). This script hides it from there, so a run from a
+# worktree under <workspace>/worktrees/ hides the same notes its checks would otherwise read.
+#
 # WHAT IS HIDDEN is every ignored input a clone lacks, not only the two directories that first bit:
 # the agent-tooling files (.cc-suite.md, .claude/*.local.*, the .agents/skills symlink), the grill
 # reports, ML training output (runs/) and a stray tool's error.log. A check that happens to read any
@@ -36,23 +41,36 @@ cd "$(dirname "$0")/.." || {
   exit 1
 }
 HIDDEN=()
+
+# The notes, by the rule scripts/dev-docs-dir.mjs states: beside the main checkout, which git's common
+# directory names from any worktree; where git cannot say (a copied tree), this checkout is the main
+# one. `pwd`, not `pwd -P`: the path is printed, and should read as the checkout was reached.
+MAIN_CHECKOUT="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || MAIN_CHECKOUT=
+if [ -n "$MAIN_CHECKOUT" ]; then MAIN_CHECKOUT="$(dirname "$MAIN_CHECKOUT")"; else MAIN_CHECKOUT="$(pwd)"; fi
+DOCS="$(dirname "$MAIN_CHECKOUT")/dev-docs"
+# Where a stashed name lives when it is not hidden. Every name is repo-relative except the notes,
+# which are stashed as `dev-docs` and belong at $DOCS.
+live() {
+  if [ "$1" = dev-docs ]; then printf '%s\n' "$DOCS"; else printf './%s\n' "$1"; fi
+}
 # What gets hidden: paths and globs relative to the repo root, expanded at hide time. Named once,
 # because the recovery below must look for exactly these and nothing else: a stash holding
 # anything unexpected is a situation to report, not to tidy up by moving strangers into the repo
-# root. FIRST, every path scripts/worktree-context.txt names — the agent context a worktree links
-# rather than copies: dev-docs, every AGENTS.md and the CLAUDE.md importing it, .codex, .mcp.json
-# (which csp.test.mjs reads). A clone has none of them, and reading that one list means a new area
-# rule file is hidden here the day it is linked into worktrees, with no second list to forget. Then
-# the other ignored inputs a clone lacks. The log follows the manifest's order, dev-docs first.
+# root. FIRST the notes ($DOCS, beside the main checkout). Then every path
+# scripts/worktree-context.txt names — the agent context a worktree links rather than copies: every
+# AGENTS.md and the CLAUDE.md importing it, .codex, .mcp.json (which csp.test.mjs reads). A clone has
+# none of them, and reading that one list means a new area rule file is hidden here the day it is
+# linked into worktrees, with no second list to forget. Then the other ignored inputs a clone lacks.
+# The log follows this order, dev-docs first.
 WORKTREE_CONTEXT="scripts/worktree-context.txt"
 [ -f "$WORKTREE_CONTEXT" ] || { echo "FATAL: no $WORKTREE_CONTEXT — cannot tell what a clone lacks" >&2; exit 1; }
-HIDE=()
+HIDE=(dev-docs)
 while IFS= read -r line || [ -n "$line" ]; do
   line="${line%%#*}"
   line="$(printf '%s' "$line" | tr -d '[:space:]')"
   [ -n "$line" ] && HIDE+=("$line")
 done < "$WORKTREE_CONTEXT"
-[ ${#HIDE[@]} -gt 0 ] || { echo "FATAL: $WORKTREE_CONTEXT names nothing" >&2; exit 1; }
+[ ${#HIDE[@]} -gt 1 ] || { echo "FATAL: $WORKTREE_CONTEXT names nothing" >&2; exit 1; }
 HIDE+=(.cc-suite.md 'grill-report-*.md' '.claude/*.local.*' .agents/skills runs error.log)
 # A path named twice would be moved twice, and the second move fails half-way through hiding. Refuse
 # it here, by name, before anything moves — the manifest grows by hand.
@@ -83,10 +101,16 @@ there() { [ -e "$1" ] || [ -L "$1" ]; }
 
 # Every existing path a HIDE entry names under `$1` — the repo root, or the stash — one per line,
 # relative to it. Globs expand here and nowhere else; an entry that matches nothing contributes
-# nothing (an unmatched glob is left as its own literal text, which `there` then rejects).
+# nothing (an unmatched glob is left as its own literal text, which `there` then rejects). The notes
+# are looked for where they live: at $DOCS for the repo root, under their own name in the stash.
 matches_under() {
   local base="$1" pattern path
   for pattern in "${HIDE[@]}"; do
+    if [ "$pattern" = dev-docs ]; then
+      if [ "$base" = . ]; then path="$DOCS"; else path="$base/dev-docs"; fi
+      if there "$path"; then printf 'dev-docs\n'; fi
+      continue
+    fi
     # shellcheck disable=SC2086  # the entry is a glob, and this is where it is meant to expand
     for path in "$base"/$pattern; do
       there "$path" && printf '%s\n' "${path#"$base"/}"
@@ -95,15 +119,17 @@ matches_under() {
 }
 
 restore() {
+  local dest
   for name in "${HIDDEN[@]-}"; do
     [ -n "$name" ] || continue
     there "$STASH/$name" || continue
+    dest="$(live "$name")"
     # Never `rm -rf` the live copy to make room. If something already exists at the destination,
     # the stash is the copy of unknown provenance and the live one wins; say so and keep both.
-    if there "./$name"; then
-      echo "WARNING: ./$name reappeared during the run — leaving $STASH/$name in place" >&2
-    elif ! mv "$STASH/$name" "./$name"; then
-      echo "WARNING: could not restore ./$name — it is still in $STASH" >&2
+    if there "$dest"; then
+      echo "WARNING: $dest reappeared during the run — leaving $STASH/$name in place" >&2
+    elif ! mv "$STASH/$name" "$dest"; then
+      echo "WARNING: could not restore $dest — it is still in $STASH" >&2
     fi
   done
   rm -f "$OWNER"
@@ -157,7 +183,7 @@ run() {
 icon_copies() {
   local src copy drift=0
   for src in scripts/icons/*.svg; do
-    copy="dev-docs/design/icons/${src#scripts/icons/}"
+    copy="$DOCS/design/icons/${src#scripts/icons/}"
     [ -e "$copy" ] || continue
     if ! cmp -s "$src" "$copy"; then
       echo "  $copy differs from $src, which is the source — copy the source over it"
@@ -166,7 +192,7 @@ icon_copies() {
   done
   return $drift
 }
-if [ -d dev-docs/design/icons ]; then
+if [ -d "$DOCS/design/icons" ]; then
   run "design-kit icon copies match scripts/icons/ (the source)" cmp icon_copies
 fi
 
@@ -192,17 +218,18 @@ fi
 if [ -d "$STASH" ]; then
   while IFS= read -r name; do
     [ -n "$name" ] || continue
+    dest="$(live "$name")"
     # A collision is the one case where guessing destroys data, so it stops the run. Continuing
     # used to `mv ./dev-docs "$STASH/dev-docs"` onto a directory that already existed — which
     # moves it INSIDE — so the restore handed back one dev-docs with a second nested inside it,
     # holding two runs' notes merged into one tree. It is also what a second, concurrent run of
     # this script looks like from here, and that must not be resolved by a coin toss either.
-    if there "./$name"; then
-      die "both ./$name and $STASH/$name exist. Either a previous run was killed, or another run
+    if there "$dest"; then
+      die "both $dest and $STASH/$name exist. Either a previous run was killed, or another run
        is in progress. Reconcile them by hand — this script will not guess which copy is yours."
     fi
-    mv "$STASH/$name" "./$name" || die "could not recover ./$name from $STASH"
-    echo "recovered ./$name from an interrupted run"
+    mv "$STASH/$name" "$dest" || die "could not recover $dest from $STASH"
+    echo "recovered $dest from an interrupted run"
   done < <(matches_under "$STASH")
   find "$STASH" -mindepth 1 -type d -empty -delete 2>/dev/null
   strays="$(find "$STASH" -mindepth 1 -maxdepth 1 ! -name .owner -exec basename {} \; | tr '\n' ' ')"
@@ -221,7 +248,7 @@ while IFS= read -r name; do
   # in place and report PASS for a fresh clone it never simulated — a green that proves nothing,
   # which is worse than a red.
   mkdir -p "$STASH/$(dirname "$name")" || die "could not prepare $STASH for $name"
-  mv "./$name" "$STASH/$name" || die "could not hide $name"
+  mv "$(live "$name")" "$STASH/$name" || die "could not hide $name"
   HIDDEN+=("$name")
 done < <(matches_under .)
 if [ ${#HIDDEN[@]} -gt 0 ]; then

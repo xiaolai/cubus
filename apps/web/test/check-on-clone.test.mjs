@@ -16,8 +16,10 @@
 // are in view.
 //
 // The real script is copied into a throwaway fixture and run there. It cds to its own parent's
-// parent, so a copy at <tmp>/scripts/ operates entirely on <tmp> — no hook in the script, and the
-// file under test is the file that ships. The checks it runs are stubbed to trivial commands on
+// parent, so a copy at <ws>/main/scripts/ operates on <ws>/main — no hook in the script, and the
+// file under test is the file that ships. The fixture is a WORKSPACE because the notes are not in the
+// checkout: since 2026-10-23 dev-docs is a separate repository beside it (<ws>/dev-docs), found
+// through git's common directory, or the checkout's own parent where git cannot say. The checks it runs are stubbed to trivial commands on
 // PATH, because what is being tested is what happens to the directories, not what pnpm says.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
@@ -25,23 +27,29 @@ import { spawnSync } from 'node:child_process';
 import { cpSync, lstatSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync, existsSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { MANIFEST, WORKTREE_CONTEXT } from './fixtures/worktree-context.mjs';
 
 const SCRIPT = fileURLToPath(new URL('../../../scripts/check-on-clone.sh', import.meta.url));
 const STASH = '.check-on-clone-stash';
-// The script hides the worktree manifest's paths first, in its order, then the other ignored inputs.
+// The script hides the notes beside the checkout first, then the worktree manifest's paths in its
+// order, then the other ignored inputs.
 // The agent rule files beyond the root's are the manifest's nested entries.
 const NESTED_RULES = WORKTREE_CONTEXT.filter((p) => p.includes('/'));
-const escape = (s) => s.replace(/[./]/g, (c) => `\\${c}`);
+const escape = (s) => s.replace(/[./-]/g, (c) => `\\${c}`);
 // Every tool the script's checks declare they need. The icons check needs rsvg-convert as well as
 // python3: verify-icons.py reports its renderer-dependent measurements as informational without
 // it, and a run that could only be informational is a skip, not a pass.
 const TOOLS = ['pnpm', 'python3', 'git', 'rsvg-convert'];
 
-/** A fixture repo with the script in it, plus stubs so its checks succeed cheaply. */
+/** The notes of the checkout at `root`: beside it, never in it. */
+const docsOf = (root) => join(dirname(root), 'dev-docs');
+
+/** A fixture workspace with the script in its checkout, plus stubs so its checks succeed cheaply.
+ *  Returns the checkout; the workspace is its parent, removed by `cleanup`. */
 function fixture() {
-  const root = mkdtempSync(join(tmpdir(), 'clone-check-'));
+  const root = join(mkdtempSync(join(tmpdir(), 'clone-check-')), 'main');
   mkdirSync(join(root, 'scripts'), { recursive: true });
   cpSync(SCRIPT, join(root, 'scripts/check-on-clone.sh'));
   cpSync(MANIFEST, join(root, 'scripts/worktree-context.txt'));
@@ -52,11 +60,14 @@ function fixture() {
   return root;
 }
 
-/** Two directories with a recognisable file in each, so a merge or a loss is visible. */
+const cleanup = (root) => rmSync(dirname(root), { recursive: true, force: true });
+
+/** The notes beside the checkout and .codex in it, a recognisable file in each, so a merge or a loss
+ *  is visible. */
 function contents(root, marker) {
-  for (const dir of ['dev-docs', '.codex']) {
-    mkdirSync(join(root, dir), { recursive: true });
-    writeFileSync(join(root, dir, 'note.md'), marker);
+  for (const dir of [docsOf(root), join(root, '.codex')]) {
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'note.md'), marker);
   }
 }
 
@@ -108,13 +119,15 @@ test('a clean run hides the directories and puts them back', () => {
     const r = run(root);
     assert.equal(r.status, 0, r.stdout + r.stderr);
     assert.match(r.stdout, /hidden: dev-docs \.codex -> \.check-on-clone-stash/);
+    // The notes were moved from BESIDE the checkout, and put back there — not into it.
+    assert.equal(existsSync(join(root, 'dev-docs')), false, 'the notes were restored into the checkout');
     // Back where they started, with their contents, and no stash left behind.
-    assert.equal(readFileSync(join(root, 'dev-docs/note.md'), 'utf8'), 'original');
+    assert.equal(readFileSync(join(docsOf(root), 'note.md'), 'utf8'), 'original');
     assert.equal(readFileSync(join(root, '.codex/note.md'), 'utf8'), 'original');
     assert.equal(existsSync(join(root, STASH)), false);
     assert.match(r.stdout, /^PASS: /m);
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    cleanup(root);
   }
 });
 
@@ -149,7 +162,7 @@ test('every ignored input a clone lacks is hidden and restored, files and symlin
     assert.equal(r.status, 0, r.stdout + r.stderr);
     assert.match(
       r.stdout,
-      new RegExp(String.raw`hidden: ${WORKTREE_CONTEXT.map(escape).join(' ')} \.cc-suite\.md grill-report-2026-01-01\.md \.claude\/settings\.local\.json \.agents\/skills runs error\.log -> \.check-on-clone-stash`),
+      new RegExp(String.raw`hidden: dev-docs ${WORKTREE_CONTEXT.map(escape).join(' ')} \.cc-suite\.md grill-report-2026-01-01\.md \.claude\/settings\.local\.json \.agents\/skills runs error\.log -> \.check-on-clone-stash`),
       'not every ignored input was hidden, or not in the declared order',
     );
     assert.equal(readFileSync(join(root, '.cc-suite.md'), 'utf8'), 'suite');
@@ -164,7 +177,7 @@ test('every ignored input a clone lacks is hidden and restored, files and symlin
     for (const f of NESTED_RULES) assert.equal(readFileSync(join(root, f), 'utf8'), `rules in ${f}`);
     assert.equal(existsSync(join(root, STASH)), false);
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    cleanup(root);
   }
 });
 
@@ -188,10 +201,10 @@ test('a check whose tool is missing is reported SKIPPED, and the run is not a pa
     assert.match(r.stdout, /^ {2}vendored bundles \(needs pnpm\)$/m);
     assert.doesNotMatch(r.stdout, /^PASS:/m, 'a skipped check was counted as a pass');
     // And the tree was restored regardless of the verdict.
-    assert.equal(readFileSync(join(root, 'dev-docs/note.md'), 'utf8'), 'original');
+    assert.equal(readFileSync(join(docsOf(root), 'note.md'), 'utf8'), 'original');
     assert.equal(existsSync(join(root, STASH)), false);
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    cleanup(root);
   }
 });
 
@@ -208,9 +221,9 @@ test('a check whose python module is missing is reported SKIPPED, not FAILED', (
     assert.match(r.stdout, /=== icons ===\n {2}SKIPPED — needs PIL for python3/);
     assert.match(r.stdout, /^ {2}icons \(needs PIL for python3\)$/m);
     assert.doesNotMatch(r.stdout, /FAILED/, 'a missing module was reported as a failed check');
-    assert.equal(readFileSync(join(root, 'dev-docs/note.md'), 'utf8'), 'original');
+    assert.equal(readFileSync(join(docsOf(root), 'note.md'), 'utf8'), 'original');
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    cleanup(root);
   }
 });
 
@@ -222,21 +235,21 @@ test('a drifted design-kit copy of the icon source fails the run; an identical o
   try {
     contents(root, 'original');
     mkdirSync(join(root, 'scripts/icons'), { recursive: true });
-    mkdirSync(join(root, 'dev-docs/design/icons'), { recursive: true });
+    mkdirSync(join(docsOf(root), 'design/icons'), { recursive: true });
     writeFileSync(join(root, 'scripts/icons/cubus-icon-flat.svg'), '<svg>source</svg>');
-    writeFileSync(join(root, 'dev-docs/design/icons/cubus-icon-flat.svg'), '<svg>edited copy</svg>');
+    writeFileSync(join(docsOf(root), 'design/icons/cubus-icon-flat.svg'), '<svg>edited copy</svg>');
     let r = run(root);
     assert.equal(r.status, 1, r.stdout + r.stderr);
     assert.match(r.stdout, /=== design-kit icon copies match scripts\/icons\/ \(the source\) ===/);
     assert.match(r.stdout, /dev-docs\/design\/icons\/cubus-icon-flat\.svg differs from scripts\/icons\/cubus-icon-flat\.svg, which is the source/);
     assert.match(r.stdout, /^FAIL: 1 check/m);
 
-    writeFileSync(join(root, 'dev-docs/design/icons/cubus-icon-flat.svg'), '<svg>source</svg>');
+    writeFileSync(join(docsOf(root), 'design/icons/cubus-icon-flat.svg'), '<svg>source</svg>');
     r = run(root);
     assert.equal(r.status, 0, r.stdout + r.stderr);
     assert.match(r.stdout, /=== design-kit icon copies match scripts\/icons\/ \(the source\) ===\n {2}ok/);
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    cleanup(root);
   }
 });
 
@@ -248,11 +261,11 @@ test('a stash left by a killed run is recovered before anything new is hidden', 
     writeFileSync(join(root, STASH, 'dev-docs/note.md'), 'rescued');
     const r = run(root);
     assert.equal(r.status, 0, r.stdout + r.stderr);
-    assert.match(r.stdout, /recovered \.\/dev-docs from an interrupted run/);
-    assert.equal(readFileSync(join(root, 'dev-docs/note.md'), 'utf8'), 'rescued');
+    assert.match(r.stdout, new RegExp(`recovered ${escape(docsOf(root))} from an interrupted run`));
+    assert.equal(readFileSync(join(docsOf(root), 'note.md'), 'utf8'), 'rescued');
     assert.equal(existsSync(join(root, STASH)), false);
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    cleanup(root);
   }
 });
 
@@ -270,7 +283,7 @@ test('a nested file left in a killed run\'s stash is recovered, and its empty pa
     assert.equal(readFileSync(join(root, '.claude/settings.local.json'), 'utf8'), '{"rescued":true}');
     assert.equal(existsSync(join(root, STASH)), false);
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    cleanup(root);
   }
 });
 
@@ -282,14 +295,14 @@ test('a collision stops the run instead of merging the two copies', () => {
     writeFileSync(join(root, STASH, 'dev-docs/note.md'), 'stashed');
     const r = run(root);
     assert.notEqual(r.status, 0);
-    assert.match(r.stderr, /both \.\/dev-docs and .*dev-docs exist/);
+    assert.match(r.stderr, new RegExp(`both ${escape(docsOf(root))} and .*dev-docs exist`));
     // Neither copy moved, and above all nothing nested: the old code moved the live tree INSIDE
     // the surviving stash directory and then restored the two of them as one.
-    assert.equal(readFileSync(join(root, 'dev-docs/note.md'), 'utf8'), 'live');
+    assert.equal(readFileSync(join(docsOf(root), 'note.md'), 'utf8'), 'live');
     assert.equal(readFileSync(join(root, STASH, 'dev-docs/note.md'), 'utf8'), 'stashed');
-    assert.equal(existsSync(join(root, 'dev-docs', 'dev-docs')), false);
+    assert.equal(existsSync(join(docsOf(root), 'dev-docs')), false);
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    cleanup(root);
   }
 });
 
@@ -303,7 +316,7 @@ test('a stash holding something unexpected is reported, not flung into the repo 
     assert.match(r.stderr, /holds something this script did not put there: someone-elses-file/);
     assert.equal(existsSync(join(root, 'someone-elses-file')), false);
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    cleanup(root);
   }
 });
 
@@ -314,9 +327,9 @@ test('a second run refuses while the first is still holding the stash', () => {
     // Exactly what a live run leaves behind: the directories hidden, and a pid that answers.
     mkdirSync(join(root, STASH), { recursive: true });
     writeFileSync(join(root, STASH, '.owner'), String(process.pid));
-    for (const dir of ['dev-docs', '.codex']) {
-      cpSync(join(root, dir), join(root, STASH, dir), { recursive: true });
-      rmSync(join(root, dir), { recursive: true });
+    for (const [live, name] of [[docsOf(root), 'dev-docs'], [join(root, '.codex'), '.codex']]) {
+      cpSync(live, join(root, STASH, name), { recursive: true });
+      rmSync(live, { recursive: true });
     }
     const r = run(root);
     assert.notEqual(r.status, 0);
@@ -325,9 +338,9 @@ test('a second run refuses while the first is still holding the stash', () => {
     // invocation, which recovers the FIRST one's only copy and hides it again under itself —
     // after which whichever finishes first un-hides for both.
     assert.equal(readFileSync(join(root, STASH, 'dev-docs/note.md'), 'utf8'), 'original');
-    assert.equal(existsSync(join(root, 'dev-docs')), false);
+    assert.equal(existsSync(docsOf(root)), false);
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    cleanup(root);
   }
 });
 
@@ -341,11 +354,11 @@ test('a stash whose owner is gone is still recovered — the lock is not a tombs
     writeFileSync(join(root, STASH, '.owner'), '21474836');
     const r = run(root);
     assert.equal(r.status, 0, r.stdout + r.stderr);
-    assert.match(r.stdout, /recovered \.\/dev-docs from an interrupted run/);
-    assert.equal(readFileSync(join(root, 'dev-docs/note.md'), 'utf8'), 'rescued');
+    assert.match(r.stdout, new RegExp(`recovered ${escape(docsOf(root))} from an interrupted run`));
+    assert.equal(readFileSync(join(docsOf(root), 'note.md'), 'utf8'), 'rescued');
     assert.equal(existsSync(join(root, STASH)), false);
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    cleanup(root);
   }
 });
 
@@ -356,7 +369,7 @@ for (const [signal, code] of [['INT', 130], ['TERM', 143]]) {
       contents(root, 'original');
       const r = run(root, { signal });
       // Restored…
-      assert.equal(readFileSync(join(root, 'dev-docs/note.md'), 'utf8'), 'original', r.stdout);
+      assert.equal(readFileSync(join(docsOf(root), 'note.md'), 'utf8'), 'original', r.stdout);
       assert.equal(existsSync(join(root, STASH)), false);
       // …and STOPPED. The handler used to restore and then RETURN, so bash carried on to the next
       // check — running the rest of a "fresh clone" run against a tree it had just un-hidden, and
@@ -367,7 +380,7 @@ for (const [signal, code] of [['INT', 130], ['TERM', 143]]) {
       // an interrupted run from a failing one.
       assert.match(r.stdout, new RegExp(`exit=${code}`), r.stdout + r.stderr);
     } finally {
-      rmSync(root, { recursive: true, force: true });
+      cleanup(root);
     }
   });
 }
@@ -378,16 +391,52 @@ test('a path named both in the worktree manifest and in the script\'s own list i
   const root = fixture();
   try {
     contents(root, 'original');
-    writeFileSync(join(root, 'scripts/worktree-context.txt'), 'dev-docs\nruns\n');
+    writeFileSync(join(root, 'scripts/worktree-context.txt'), '.codex\nruns\n');
     mkdirSync(join(root, 'runs'));
     writeFileSync(join(root, 'runs/last.pt'), 'weights');
     const r = run(root);
     assert.equal(r.status, 1, r.stdout + r.stderr);
     assert.match(r.stderr, /runs is named twice/);
-    assert.equal(readFileSync(join(root, 'dev-docs/note.md'), 'utf8'), 'original');
+    assert.equal(readFileSync(join(docsOf(root), 'note.md'), 'utf8'), 'original');
     assert.equal(readFileSync(join(root, 'runs/last.pt'), 'utf8'), 'weights');
     assert.equal(existsSync(join(root, STASH)), false, 'something was stashed although the run refused');
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    cleanup(root);
+  }
+});
+
+// A worktree's parent is worktrees/, where no notes are: a run from a worktree must hide the notes
+// beside the MAIN checkout, found through git's common directory, or every check it runs still sees
+// them and the "fresh clone" verdict is about a tree that has the notes. Real git here, not the stub.
+test('a run from a worktree hides the notes beside the MAIN checkout, and puts them back there', () => {
+  const root = fixture();
+  try {
+    contents(root, 'original');
+    const G = ['-c', 'core.hooksPath=/dev/null', '-c', 'user.name=fixture', '-c', 'user.email=fixture@example.invalid'];
+    const git = (cwd, ...args) => execFileSync('git', [...G, ...args], { cwd, stdio: 'pipe' });
+    writeFileSync(join(root, '.gitignore'), 'bin/\n.codex/\n.check-on-clone-stash/\n');
+    git(root, 'init', '-q', '-b', 'main');
+    git(root, 'add', '-A');
+    git(root, 'commit', '-q', '-m', 'fixture');
+    const wt = join(dirname(root), 'worktrees', 'wt');
+    git(root, 'worktree', 'add', '-q', '-b', 'wt', wt);
+    // The worktree's checks see what a clone sees: the first one records whether the notes are in view.
+    const seen = join(dirname(root), 'seen');
+    mkdirSync(join(wt, 'bin'));
+    for (const tool of TOOLS.filter((t) => t !== 'git')) {
+      writeFileSync(join(wt, 'bin', tool), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+    }
+    writeFileSync(join(wt, 'bin/pnpm'),
+      `#!/bin/sh\n[ -e "${seen}" ] || { [ -e "${docsOf(root)}" ] && echo visible || echo hidden; } > "${seen}"\n`,
+      { mode: 0o755 });
+    const r = spawnSync('bash', [join(wt, 'scripts/check-on-clone.sh')],
+      { cwd: wt, encoding: 'utf8', env: { ...process.env, PATH: `${join(wt, 'bin')}:/usr/bin:/bin` } });
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    assert.equal(readFileSync(seen, 'utf8'), 'hidden\n', 'the checks ran with the main checkout\'s notes in view');
+    assert.equal(readFileSync(join(docsOf(root), 'note.md'), 'utf8'), 'original');
+    assert.equal(existsSync(join(dirname(wt), 'dev-docs')), false, 'the notes were put beside the worktree');
+    assert.equal(existsSync(join(wt, STASH)), false);
+  } finally {
+    cleanup(root);
   }
 });
