@@ -93,12 +93,13 @@ key.properties
 # bare `:memory:` is git pathspec magic and matches nothing.
 :memory:.ses
 
-# Working notes and reasoning: plans, provenance records, measurements, the design kit, and the
-# grill reports. Kept locally, not shipped. Code comments and AGENTS.md still cite these paths on
-# purpose — the reasoning is worth naming even where the file is not in the clone — so the checks
-# that read them (stage.test.mjs, tokens.test.mjs, no-dangling-pointers.test.mjs) SKIP rather than
-# pass when they are absent, and say so.
-dev-docs/
+# The grill reports: working notes, kept locally, not shipped.
+#
+# NO dev-docs RULE, on purpose (2026-10-23). The notes left this repository: dev-docs is a separate
+# repository BESIDE the main checkout (<workspace>/dev-docs), found through git's common directory
+# (scripts/dev-docs-dir.mjs). Code comments still cite `dev-docs/…` paths on purpose, and the checks
+# that read them SKIP rather than pass where the notes are absent. A rule here would silently ignore a
+# stray dev-docs/ made INSIDE the checkout — a copy no reader looks at — so one shows as untracked.
 grill-report-*.md
 
 # Agent tooling configuration. Local to whoever is driving the repo, not part of the project.
@@ -106,7 +107,8 @@ grill-report-*.md
 .cc-suite.md
 
 # The maintainer's decision record and agent registrations, untracked since 2026-09-06 (they were
-# public before that, and the history still holds them). Same treatment as dev-docs above: code
+# public before that, and the history still holds them). The root AGENTS.md and CLAUDE.md are
+# symlinks to the workspace's AGENTS.md (../AGENTS.md) since 2026-10-23. Code
 # comments and READMEs cite AGENTS.md on purpose, scripts/check-on-clone.sh hides all three so the
 # clean-clone run sees what a clone sees, and the one check that read one of them (csp.test.mjs,
 # the .mcp.json half of the socket-precedence test) reports that half as unchecked when the file
