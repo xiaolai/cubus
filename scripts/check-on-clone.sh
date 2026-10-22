@@ -40,10 +40,10 @@ HIDDEN=()
 # because the recovery below must look for exactly these and nothing else: a stash holding
 # anything unexpected is a situation to report, not to tidy up by moving strangers into the repo
 # root. FIRST, every path scripts/worktree-context.txt names — the agent context a worktree links
-# rather than copies: dev-docs, every AGENTS.md and the CLAUDE.md importing it, .mcp.json (which
-# csp.test.mjs reads). A clone has none of them, and reading that one list means a new area rule
-# file is hidden here the day it is linked into worktrees, with no second list to forget. Then the
-# other ignored inputs a clone lacks. dev-docs and .codex lead the log, the manifest's first two.
+# rather than copies: dev-docs, every AGENTS.md and the CLAUDE.md importing it, .codex, .mcp.json
+# (which csp.test.mjs reads). A clone has none of them, and reading that one list means a new area
+# rule file is hidden here the day it is linked into worktrees, with no second list to forget. Then
+# the other ignored inputs a clone lacks. The log follows the manifest's order, dev-docs first.
 WORKTREE_CONTEXT="scripts/worktree-context.txt"
 [ -f "$WORKTREE_CONTEXT" ] || { echo "FATAL: no $WORKTREE_CONTEXT — cannot tell what a clone lacks" >&2; exit 1; }
 HIDE=()
