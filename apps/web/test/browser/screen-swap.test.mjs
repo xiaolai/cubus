@@ -41,6 +41,7 @@ import { webkit } from 'playwright';
 
 import { pace } from '../browser-wait.mjs';
 import { freePort } from '../free-port.mjs';
+import { LIVENESS_MS } from './harness.mjs';
 
 // Asked of the OS in before(), not chosen: a fixed port collides with an orphaned server
 // from an interrupted run, which fails at startup and reads like a regression. See free-port.mjs.
@@ -147,6 +148,24 @@ async function press(page) {
     },
     before,
   );
+}
+
+/** Press the tab for `id` and wait until the screen it asks for is on the paper.
+ *
+ *  Not a sleep: this was a fixed 700–900 ms, and the hash is set at once while the screen being
+ *  left stays `.screen.active` until the route is applied (AGENTS.md §5). A route that landed
+ *  late had every check after the sleep read whichever screen happened to be up, so "navigating
+ *  rebuilt the renderer" could pass about screens that were never visited. The root on the paper
+ *  before the press is refused too: a tab for the screen already showing re-renders it in place
+ *  (`go()` → `applyRoute`), and `data-screen` alone would already be true. */
+async function navTo(page, id) {
+  const before = await page.evaluateHandle(() => document.querySelector('.screen.active'));
+  await page.click(`[data-nav="${id}"]`);
+  await page.waitForFunction(([was, want]) => {
+    const now = document.querySelector('.screen.active');
+    return now !== was && now?.dataset.screen === want;
+  }, [before, id], { timeout: LIVENESS_MS });
+  await before.dispose();
 }
 
 /** Record, once per animation frame, exactly what a composited frame would show. A rAF callback
@@ -284,10 +303,7 @@ test('no press and no navigation builds a second WebGL context', async () => {
 
     // Away to screens with no cube at all and back: the parked one must outlive them, or coming
     // home from Settings pays for a context every time.
-    for (const id of ['timer', 'stats', 'home', 'scramble', 'home']) {
-      await page.click(`[data-nav="${id}"]`);
-      await page.waitForTimeout(700);
-    }
+    for (const id of ['timer', 'stats', 'home', 'scramble', 'home']) await navTo(page, id);
     assert.equal(await page.evaluate(() => window.__gl), 1, 'navigating rebuilt the renderer');
     assert.equal(await page.evaluate(() => document.querySelectorAll('cubus-cube').length), 1, 'more than one cube is in the document');
     assert.deepEqual(errors.map(String), [], 'the page threw');
@@ -304,10 +320,17 @@ test('a re-used renderer arrives clean, and drives its new screen exactly once',
     // Onto the scan screen, whose twin is the SAME element with a different job. Anything Home
     // set that this screen does not set must be gone — a leftover `alg` would leave the twin
     // holding a walk through a cube nobody is looking at.
-    await page.click('[data-nav="scan"]');
-    await page.waitForTimeout(900);
+    await navTo(page, 'scan');
+    // The twin's state comes from the scan panel's first progress report, a step after the screen
+    // lands. Read once it has: a leftover from Home that arrives late (a Home mount coming back
+    // from an await) has had that long to show.
+    const painted = await page.waitForFunction(
+      () => Boolean(document.querySelector('#scanCube > cubus-cube')?.getAttribute('facelets')),
+      null, { timeout: LIVENESS_MS },
+    ).then(() => true, () => false);
+    assert.ok(painted, 'the scan twin was never given a state to paint');
     const onScan = await page.evaluate(() => {
-      const el = document.querySelector('cubus-cube');
+      const el = document.querySelector('#scanCube > cubus-cube');
       return el && { scramble: el.getAttribute('scramble'), alg: el.getAttribute('alg'), facelets: Boolean(el.getAttribute('facelets')) };
     });
     assert.ok(onScan, 'the scan screen has no cube');
@@ -317,7 +340,7 @@ test('a re-used renderer arrives clean, and drives its new screen exactly once',
 
     // Back to Home twice more, then ask the element to announce a step. If the listeners from
     // earlier visits were still on it, one event would reach three handlers.
-    for (let i = 0; i < 2; i++) { await page.click('[data-nav="home"]'); await page.waitForTimeout(900); }
+    for (let i = 0; i < 2; i++) await navTo(page, 'home');
     const delivered = await page.evaluate(() => {
       window.__steps = 0;
       document.querySelector('#viewCube cubus-cube').dispatchEvent(new CustomEvent('cubus-step', { detail: { index: 1, total: 5 } }));
@@ -437,6 +460,9 @@ test('the renderer is never told to draw a SOLVED cube while the subject is a sc
       window.cubusGo('home');
     })()`);
     await page.waitForFunction(() => document.querySelectorAll('.chip-m').length > 0, null);
+    // Not a wait for the navigation: `cubusGo` onto the screen already showing re-renders inside the
+    // call, so the chips above are the new walk's. This keeps the frame sampler watching the frames
+    // after the walk lands, where a solved cube drawn late would show.
     await page.waitForTimeout(600);
 
     const SOLVED = 'UUUUUUUUURRRRRRRRRFFFFFFFFFDDDDDDDDDLLLLLLLLLBBBBBBBBB';
@@ -531,6 +557,9 @@ test('a refuted solution still blocks — the oracle can still say no', async ()
     assert.ok(corrupted, 'no carried solution to corrupt — the derivation path is gone');
 
     await page.evaluate('window.cubusGo("home")'); // re-walk the same subject
+    // Not a wait for the navigation: `cubusGo` onto the screen already showing re-renders inside the
+    // call. This is time for the re-walk to reach the oracle and refuse; landing late fails the
+    // sentence check below rather than passing it.
     await page.waitForTimeout(2500);
     const shown = await page.evaluate(() => ({
       count: document.querySelector('#moveCount')?.textContent ?? null,

@@ -242,7 +242,9 @@ test('within a screen\'s body no icon is drawn by two controls with different na
     const page = await context.newPage();
     for (const route of ['home', 'scan', 'scramble', 'timer', 'stats', 'settings', 'shapes']) {
       await page.goto(`${fixture.base}/index.html#/${route}`);
-      await page.waitForSelector('.screen.active', { timeout: LIVENESS_MS });
+      // The screen asked for, by name. Past the first route this `goto` changes only the hash, a same-document
+      // navigation: the screen being left stays `.screen.active` until the route is applied (AGENTS.md §5).
+      await page.waitForSelector(`.screen.active[data-screen="${route}"]`, { timeout: LIVENESS_MS });
       await page.waitForLoadState('load');
       await take(page, route);
       // THE SCAN SCREEN AFTER A SIDE HAS BEEN READ, not only fresh (sweep 2026-10-20, G1): a read side's centre becomes
