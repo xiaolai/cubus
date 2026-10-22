@@ -15,6 +15,7 @@ import { realpathSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { DEV_DOCS } from '../../scripts/dev-docs-dir.mjs';
 import { createDevServer } from './dev-server.mjs';
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
@@ -45,7 +46,8 @@ const HOST = process.env.CUBUS_DEV_HOST || '127.0.0.1';
 // the endpoint reachable by a test, which it was not while it lived in the listener.
 //
 // Dev only. `build.mjs` produces `dist/` and never includes this server.
-const RECORD_DIR = join(ROOT, '..', '..', 'dev-docs', 'recordings');
+// The notes sit beside the main checkout, not in it (scripts/dev-docs-dir.mjs).
+const RECORD_DIR = join(DEV_DOCS, 'recordings');
 
 // Live-reload is for a human with an editor open, and it is actively hostile to a test.
 //

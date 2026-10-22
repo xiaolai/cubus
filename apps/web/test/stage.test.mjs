@@ -20,13 +20,16 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { existsSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { DEV_DOCS } from '../../../scripts/dev-docs-dir.mjs';
 
 import { DESKTOP, RATIO, desktopWindow, fitStage } from '../lib/stage.js';
 
 const TABLES = JSON.parse(readFileSync(new URL('./fixtures/stage-contract.json', import.meta.url), 'utf8'));
 
 /** The document the fixture was taken from. Absent on any machine that only has the repository. */
-const DOC_URL = new URL('../../../dev-docs/stage-contract.md', import.meta.url);
+// The notes sit beside the main checkout, not in it (scripts/dev-docs-dir.mjs).
+const DOC_URL = join(DEV_DOCS, 'stage-contract.md');
 const doc = existsSync(DOC_URL) ? readFileSync(DOC_URL, 'utf8') : null;
 
 /** `1376×1032` → [1376, 1032]; the first such pair in a string, or null. */

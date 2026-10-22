@@ -15,8 +15,9 @@
 // `alg-ledger.test.mjs` holds the library to.
 
 import { mkdirSync, writeFileSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { DEV_DOCS } from '../../../scripts/dev-docs-dir.mjs';
 
 import {
   ALG_SETS, ALG_SOURCES, METHOD_SETS, PENDING_SOURCES, TRIGGERS, TRIGGER_SOURCES, algIds, algRow, algSet,
@@ -307,7 +308,7 @@ if (RUN_DIRECTLY) {
     const fixture = fileURLToPath(new URL('../test/fixtures/alg-ledger.mjs', import.meta.url));
     writeFileSync(fixture, fixtureText(ledger));
     console.log(`wrote ${fixture}`);
-    const page = fileURLToPath(new URL('../../../dev-docs/artifacts/algorithm-ledger.html', import.meta.url));
+    const page = join(DEV_DOCS, 'artifacts', 'algorithm-ledger.html');
     mkdirSync(dirname(page), { recursive: true });
     writeFileSync(page, pageHtml(ledger));
     console.log(`wrote ${page}`);

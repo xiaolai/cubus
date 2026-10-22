@@ -6,13 +6,15 @@ import { writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import Cube from 'cubejs';
+import { DEV_DOCS } from '../../../scripts/dev-docs-dir.mjs';
 import { GanCube } from '../src/driver.js';
 import { extractMacFromManufacturerData } from '../src/mac.js';
 import { BlewTransport, scanForCube } from '../src/transport/blew.js';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const SCAN_ADV = join(ROOT, 'scripts', 'scan-adv');
-const STATE_JS = join(ROOT, '..', 'dev-docs', 'spikes', 'cube-state', 'state.js');
+// The notes sit beside the main checkout, not in it (scripts/dev-docs-dir.mjs).
+const STATE_JS = join(DEV_DOCS, 'spikes', 'cube-state', 'state.js');
 
 function setupAlgFor(facelets: string): string {
   Cube.initSolver();

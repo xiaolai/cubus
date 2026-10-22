@@ -28,6 +28,8 @@ import assert from 'node:assert/strict';
 import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
+import { join } from 'node:path';
+import { DEV_DOCS } from '../../../scripts/dev-docs-dir.mjs';
 
 import { MOVE_NAMES, SOLVED, applyAlg, applyMove } from '../lib/cube-pieces.js';
 import { PROJECTIONS, TARGETS } from '../lib/stage-targets.js';
@@ -387,8 +389,8 @@ test('the ORACLES are exercised, not just the answers they once produced', () =>
 // solving-method-phases-note.test.mjs exists to draw.
 
 const REPO = new URL('../../../', import.meta.url);
-const PLAN = fileURLToPath(new URL('dev-docs/solve-to-state-plan.md', REPO));
-const DEV_DOCS = fileURLToPath(new URL('dev-docs', REPO));
+// The notes sit beside the main checkout, not in it (scripts/dev-docs-dir.mjs).
+const PLAN = join(DEV_DOCS, 'solve-to-state-plan.md');
 const ANCHOR = fileURLToPath(new URL('apps/web/lib/cube-pieces.js', REPO));
 if (!existsSync(ANCHOR)) {
   throw new Error(`this test's path arithmetic is wrong: ${ANCHOR} does not exist, so ${PLAN} proves nothing`);

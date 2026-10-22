@@ -20,6 +20,7 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { basename, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { DEV_DOCS, citedPath } from '../../../scripts/dev-docs-dir.mjs';
 
 const ROOT = fileURLToPath(new URL('../../../', import.meta.url));
 
@@ -250,7 +251,8 @@ function namedAsGone(text, name) {
  * hard-checked everywhere, and when dev-docs is absent the count of unchecked pointers is REPORTED
  * rather than passed over in silence.
  */
-const DEV_DOCS_PRESENT = existsSync(`${ROOT}dev-docs`);
+// The notes sit beside the main checkout, not in it (scripts/dev-docs-dir.mjs).
+const DEV_DOCS_PRESENT = existsSync(DEV_DOCS);
 
 test('every repo path a living comment names actually exists', (t) => {
   const dangling = [];
@@ -268,7 +270,7 @@ test('every repo path a living comment names actually exists', (t) => {
       }
       // dev-docs is gitignored too, but checked where it is present (see DEV_DOCS_PRESENT).
       if (clean.startsWith('dev-docs/')) {
-        if (!existsSync(ROOT + clean)) dangling.push(`${file}: ${clean}`);
+        if (!existsSync(citedPath(ROOT, clean))) dangling.push(`${file}: ${clean}`);
         continue;
       }
       const verdict = rootedVerdict(file, clean);

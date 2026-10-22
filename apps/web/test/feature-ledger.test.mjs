@@ -32,9 +32,12 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { DEV_DOCS, citedPath } from '../../../scripts/dev-docs-dir.mjs';
 
 const ROOT = fileURLToPath(new URL('../../../', import.meta.url));
-const LEDGER_PATH = `${ROOT}dev-docs/feature-ledger.md`;
+// The notes sit beside the main checkout, not in it (scripts/dev-docs-dir.mjs); the ledger's
+// `dev-docs/…` cells resolve there through `citedPath`.
+const LEDGER_PATH = `${DEV_DOCS}/feature-ledger.md`;
 
 /** The statuses a row may carry. Small and closed on purpose: a vocabulary that grows a synonym
  *  per row stops sorting anything. Their meanings are defined in the ledger's own header, and the
@@ -101,7 +104,7 @@ const nameOf = (cell) => cell.replace(/\*\*/g, '').replace(/`/g, '').trim();
 /** Directory entries, or `[]` when the directory is not there. */
 function dirEntries(rel) {
   try {
-    return readdirSync(ROOT + rel, { withFileTypes: true });
+    return readdirSync(citedPath(ROOT, rel), { withFileTypes: true });
   } catch {
     return [];
   }
@@ -132,7 +135,7 @@ test('every path the ledger names exists', (t) => {
     const columns = nameOf(row.status) === 'removed' ? ['decided'] : ['code', 'tests', 'decided'];
     for (const column of columns) {
       for (const path of pathsIn(row[column])) {
-        if (!existsSync(ROOT + path)) {
+        if (!existsSync(citedPath(ROOT, path))) {
           missing.push(`line ${row.line} (${nameOf(row.feature)}) → ${column}: ${path}`);
         }
       }

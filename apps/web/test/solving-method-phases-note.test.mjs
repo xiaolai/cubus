@@ -14,13 +14,16 @@ import assert from 'node:assert/strict';
 import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
+import { join } from 'node:path';
+import { DEV_DOCS } from '../../../scripts/dev-docs-dir.mjs';
 
 import { SOLVER_PHASES } from '../bench/solver-phases.mjs';
 import { ALGORITHM_SETS, METHOD_ALGORITHMS } from './fixtures/algorithm-ledger.mjs';
 import { SETS } from '../bench/algorithm-ledger.mjs';
 
 const ROOT = new URL('../../../', import.meta.url);
-const NOTE = fileURLToPath(new URL('dev-docs/solving-method-phases.md', ROOT));
+// The notes sit beside the main checkout, not in it (scripts/dev-docs-dir.mjs).
+const NOTE = join(DEV_DOCS, 'solving-method-phases.md');
 
 /**
  * A wrong path must FAIL, not skip.
@@ -43,7 +46,6 @@ if (!existsSync(anchor)) {
  * discriminator — absent means a clean clone, present-without-the-file means the name is wrong or the
  * note has been deleted while a test still claimed to check it.
  */
-const DEV_DOCS = fileURLToPath(new URL('dev-docs', ROOT));
 function noteOrSkip(t, why) {
   if (!existsSync(DEV_DOCS)) {
     t.skip(why);

@@ -13,15 +13,17 @@
 // the answer. `test-tiers.test.mjs` claims `*.test.mjs` only, which is why this name has no `.test.`.
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, writeFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
 
 import { encodePng } from '../png.mjs';
 import { netSvg, topFaceSvg } from '../../lib/cube-flat.js';
 import { SOLVED, applyAlg } from '../../lib/cube-pieces.js';
 import { BACKEND, LAUNCH, render } from './appearance-goldens.mjs';
 import { startBrowserFixture } from './harness.mjs';
+import { DEV_DOCS } from '../../../../scripts/dev-docs-dir.mjs';
 
-const OUT = new URL('../../../../dev-docs/artifacts/phase-4-looks.html', import.meta.url);
+// The notes sit beside the main checkout, not in it (scripts/dev-docs-dir.mjs).
+const OUT = join(DEV_DOCS, 'artifacts', 'phase-4-looks.html');
 const SCRAMBLE = "R U R' U' F2 L D B'";
 const SOLVED_CUBE = `${'U'.repeat(9)}${'R'.repeat(9)}${'F'.repeat(9)}${'D'.repeat(9)}${'L'.repeat(9)}${'B'.repeat(9)}`;
 const COMMUTATOR = "R U R' U'";
@@ -144,9 +146,9 @@ try {
     shots.push({ ...s, src: png(shot), w: shot.w / 2, h: shot.h / 2 });
     console.log(`rendered ${s.name}`);
   }
-  mkdirSync(new URL('.', OUT), { recursive: true });
+  mkdirSync(dirname(OUT), { recursive: true });
   writeFileSync(OUT, html(shots, flats()));
-  console.log(`\nwrote ${fileURLToPath(OUT)}`);
+  console.log(`\nwrote ${OUT}`);
 } finally {
   await fixture.close();
 }

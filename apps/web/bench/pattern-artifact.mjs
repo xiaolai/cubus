@@ -8,7 +8,8 @@
 // its maneuvers. Nothing is loaded over the network; the palettes are the app's own.
 
 import { mkdirSync, writeFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
+import { join } from 'node:path';
+import { DEV_DOCS } from '../../../scripts/dev-docs-dir.mjs';
 import { SOLVED } from '../lib/cube-pieces.js';
 import { run } from '../lib/cube-moves.js';
 import { STICKER_PALETTES } from '../lib/sticker-palettes.js';
@@ -626,9 +627,9 @@ render();
 </html>
 `;
 
-const dir = fileURLToPath(new URL('../../../dev-docs/artifacts/', import.meta.url));
+const dir = join(DEV_DOCS, 'artifacts');
 mkdirSync(dir, { recursive: true });
-const out = `${dir}cube-patterns.html`;
+const out = join(dir, 'cube-patterns.html');
 writeFileSync(out, html);
 console.log(`${state.length} ledger pictures, ${NAMED.length} named, ${sets.length} sets`);
 console.log(`${(html.length / 1024).toFixed(0)} KiB, self-contained`);

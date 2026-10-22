@@ -6,18 +6,12 @@
 // Usage: npm run spike:serve   then open http://localhost:4123 in Chrome
 import { readFileSync } from 'node:fs';
 import { createServer } from 'node:http';
-import { dirname, join, resolve, sep } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { join, resolve, sep } from 'node:path';
+import { DEV_DOCS } from '../../../scripts/dev-docs-dir.mjs';
 
 const PORT = 4123;
-const WEB = join(
-  dirname(fileURLToPath(import.meta.url)),
-  '..',
-  '..',
-  'dev-docs',
-  'spikes',
-  'cube-state',
-);
+// The notes sit beside the main checkout, not in it (scripts/dev-docs-dir.mjs).
+const WEB = join(DEV_DOCS, 'spikes', 'cube-state');
 
 createServer((req, res) => {
   const rel =

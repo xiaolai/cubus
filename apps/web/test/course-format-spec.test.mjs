@@ -15,6 +15,7 @@
 //      fails here until the document says so.
 import assert from 'node:assert/strict';
 import { existsSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import test from 'node:test';
 
 import {
@@ -29,6 +30,7 @@ import { buildScript } from '../lib/script-view.js';
 import { createClockDriver, createStopDriver, timelineOf } from '../lib/script-drive.js';
 import { buildSchedule } from '../lib/lesson-schedule.js';
 import { CORNERS, EDGES, SOLVED, applyAlg } from '../lib/cube-pieces.js';
+import { DEV_DOCS } from '../../../scripts/dev-docs-dir.mjs';
 
 /**
  * The format document — in `dev-docs/`, which is gitignored, because the format is not published
@@ -39,7 +41,8 @@ import { CORNERS, EDGES, SOLVED, applyAlg } from '../lib/cube-pieces.js';
  * files: a check that could not run is reported as unchecked, never counted green. When the format
  * is published this moves back to `docs/` and the skip disappears.
  */
-const SPEC_PATH = new URL('../../../dev-docs/course-format.md', import.meta.url);
+// The notes sit beside the main checkout, not in it (scripts/dev-docs-dir.mjs).
+const SPEC_PATH = join(DEV_DOCS, 'course-format.md');
 const SPEC = existsSync(SPEC_PATH) ? readFileSync(SPEC_PATH, 'utf8') : null;
 const NO_SPEC = 'dev-docs/course-format.md is not in this checkout — the format is unpublished, so this is UNCHECKED here';
 

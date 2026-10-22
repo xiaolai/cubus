@@ -18,9 +18,12 @@
 // exit becomes a suite failure. Found exactly that way.
 
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { DEV_DOCS } from './dev-docs-dir.mjs';
 
-const DOC = fileURLToPath(new URL('../dev-docs/stage-contract.md', import.meta.url));
+// The notes sit beside the main checkout, not in it (scripts/dev-docs-dir.mjs).
+const DOC = join(DEV_DOCS, 'stage-contract.md');
 const OUT = fileURLToPath(new URL('../apps/web/test/fixtures/stage-contract.json', import.meta.url));
 
 if (!existsSync(DOC)) {

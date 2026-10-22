@@ -13,6 +13,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { existsSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { DEV_DOCS } from '../../../scripts/dev-docs-dir.mjs';
 
 import { APP_SOURCES, LIBRARY_SOURCES, readAppSource } from './app-source.mjs';
 
@@ -185,7 +187,8 @@ test('the design kit and the app ship the same token file', (t) => {
   // passed: this check has verified nothing without the kit, and reporting otherwise would be the
   // exact failure mode the design system's own gate is for. It still runs where the edit would
   // happen — nobody changes the kit on a machine that does not have it.
-  const KIT = new URL('../../../dev-docs/design/tokens.css', import.meta.url);
+  // The notes sit beside the main checkout, not in it (scripts/dev-docs-dir.mjs).
+  const KIT = join(DEV_DOCS, 'design', 'tokens.css');
   if (!existsSync(KIT)) {
     t.diagnostic('dev-docs/design/tokens.css is not on this machine (gitignored) — SKIPPED, not passed');
     t.skip();
