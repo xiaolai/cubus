@@ -22,13 +22,26 @@ CLAUDE.md
 # this file, so a drifted copy would be checked in place of the real one.
 .mcp.json
 
-# Area rule files, split out of AGENTS.md on 2026-10-22.
+# Area rule files: a rule lives in the nearest folder holding every file it governs (split out of
+# AGENTS.md on 2026-10-22).
+apps/AGENTS.md
+apps/CLAUDE.md
+apps/desktop/src-tauri/AGENTS.md
+apps/desktop/src-tauri/CLAUDE.md
 apps/web/AGENTS.md
 apps/web/CLAUDE.md
+apps/web/bench/AGENTS.md
+apps/web/bench/CLAUDE.md
 apps/web/lib/AGENTS.md
 apps/web/lib/CLAUDE.md
+apps/web/lib/screens/AGENTS.md
+apps/web/lib/screens/CLAUDE.md
 apps/web/lib/screens/scan/AGENTS.md
 apps/web/lib/screens/scan/CLAUDE.md
+apps/web/test/AGENTS.md
+apps/web/test/CLAUDE.md
+crates/cube-vision/AGENTS.md
+crates/cube-vision/CLAUDE.md
 packages/cube-scanner/AGENTS.md
 packages/cube-scanner/CLAUDE.md
 packages/cubus-cube/AGENTS.md
