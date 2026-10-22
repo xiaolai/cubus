@@ -43,7 +43,7 @@ HIDDEN=()
 # rather than copies: dev-docs, every AGENTS.md and the CLAUDE.md importing it, .mcp.json (which
 # csp.test.mjs reads). A clone has none of them, and reading that one list means a new area rule
 # file is hidden here the day it is linked into worktrees, with no second list to forget. Then the
-# other ignored inputs a clone lacks. dev-docs and .codex still lead the log when both are present.
+# other ignored inputs a clone lacks. dev-docs and .codex lead the log, the manifest's first two.
 WORKTREE_CONTEXT="scripts/worktree-context.txt"
 [ -f "$WORKTREE_CONTEXT" ] || { echo "FATAL: no $WORKTREE_CONTEXT — cannot tell what a clone lacks" >&2; exit 1; }
 HIDE=()
@@ -53,7 +53,7 @@ while IFS= read -r line || [ -n "$line" ]; do
   [ -n "$line" ] && HIDE+=("$line")
 done < "$WORKTREE_CONTEXT"
 [ ${#HIDE[@]} -gt 0 ] || { echo "FATAL: $WORKTREE_CONTEXT names nothing" >&2; exit 1; }
-HIDE+=(.codex .cc-suite.md 'grill-report-*.md' '.claude/*.local.*' .agents/skills runs error.log)
+HIDE+=(.cc-suite.md 'grill-report-*.md' '.claude/*.local.*' .agents/skills runs error.log)
 # A path named twice would be moved twice, and the second move fails half-way through hiding. Refuse
 # it here, by name, before anything moves — the manifest grows by hand.
 dup="$(printf '%s\n' "${HIDE[@]}" | sort | uniq -d | head -1)"

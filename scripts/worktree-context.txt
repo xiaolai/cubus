@@ -17,6 +17,12 @@ dev-docs
 AGENTS.md
 CLAUDE.md
 
+# Codex's project config: the AGENTS.md byte budget (project_doc_max_bytes, which the area files
+# need) and the MCP registrations. Linked whole: it holds only config.toml and an empty prompts/;
+# Codex keeps its runtime state in ~/.codex, not here. Codex honours it only in a trusted project,
+# so a new worktree also needs a trust entry in ~/.codex/config.toml.
+.codex
+
 # MCP registrations. Shared rather than per-worktree: the one setting that could differ by checkout,
 # the tauri-mcp socket path, is taken from TAURI_MCP_IPC_PATH at run time, and csp.test.mjs reads
 # this file, so a drifted copy would be checked in place of the real one.

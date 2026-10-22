@@ -149,7 +149,7 @@ test('every ignored input a clone lacks is hidden and restored, files and symlin
     assert.equal(r.status, 0, r.stdout + r.stderr);
     assert.match(
       r.stdout,
-      new RegExp(String.raw`hidden: ${WORKTREE_CONTEXT.map(escape).join(' ')} \.codex \.cc-suite\.md grill-report-2026-01-01\.md \.claude\/settings\.local\.json \.agents\/skills runs error\.log -> \.check-on-clone-stash`),
+      new RegExp(String.raw`hidden: ${WORKTREE_CONTEXT.map(escape).join(' ')} \.cc-suite\.md grill-report-2026-01-01\.md \.claude\/settings\.local\.json \.agents\/skills runs error\.log -> \.check-on-clone-stash`),
       'not every ignored input was hidden, or not in the declared order',
     );
     assert.equal(readFileSync(join(root, '.cc-suite.md'), 'utf8'), 'suite');
