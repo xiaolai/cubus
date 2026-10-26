@@ -45,6 +45,8 @@ export const RENDERER = Object.freeze([
   'apps/web/lib/element-writes.js',
   'packages/cubus-cube/src/cubus-cube.js',
   'packages/cubus-cube/src/pose.js',
+  // Which stickers the drawn marks cover (ADR 0013). Pure arithmetic; it imports nothing.
+  'packages/cubus-cube/src/cover.js',
 ]);
 
 /** The cube-domain modules the renderer stands on. Held to the same rule. */

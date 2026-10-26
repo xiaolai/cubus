@@ -12,6 +12,7 @@ import { parseHighlight, pieceKey, resolveStickers, slotVector } from '../../../
 import { STICKER_PALETTES } from '../../../apps/web/lib/sticker-palettes.js';
 import { MARK_BODY, MARK_BODY_ALPHA, MARK_SHADOW, MARK_SHADOW_ALPHA, PLASTIC, TEXT_INK } from '../../../apps/web/lib/annotation-inks.js';
 import { HOME, after, poseAll } from './pose.js';
+import { covers, overlaps } from './cover.js';
 import { readToken } from '../../../apps/web/lib/cube-notation.js';
 import { faceTurnsOf } from '../../../apps/web/lib/cube-moves.js';
 
@@ -162,6 +163,92 @@ const CUBIE_AT = Object.freeze(
     .filter(([x, y, z]) => x || y || z)
     .map((at) => Object.freeze(at)),
 );
+
+/** The kinds of mark a sticker can be covered by, in the order a record lists them (ADR 0013). */
+const COVER_KINDS = Object.freeze(['arrow', 'label', 'trail', 'numeral', 'ghost', 'inset']);
+/** A drawn line is a pixel wide; it is taken as a quad this far either side of its centre, in CSS px. */
+const LINE_HALF_WIDTH = 1;
+
+const deepFreeze = (o) => {
+  for (const v of Object.values(o)) if (v && typeof v === 'object') deepFreeze(v);
+  return Object.freeze(o);
+};
+
+/**
+ * One view of the record, from its snapshot: each sticker's quad projected into CSS px, its facing, and
+ * the kinds of mark that cover it (`cover.js`). `all` is every view of the frame, for the inset.
+ */
+function drawnView(v, all) {
+  const e = v.viewProj;
+  const { x: rx, y: ry, width: rw, height: rh } = v.rect;
+  // A world point to [x, y, 1/w] in the element's CSS px.
+  const project = ([x, y, z]) => {
+    const w = e[3] * x + e[7] * y + e[11] * z + e[15];
+    return [
+      rx + ((e[0] * x + e[4] * y + e[8] * z + e[12]) / w + 1) / 2 * rw,
+      ry + (1 - (e[1] * x + e[5] * y + e[9] * z + e[13]) / w) / 2 * rh,
+      1 / w,
+    ];
+  };
+  const record = { role: v.role, rect: { ...v.rect }, camera: v.camera, stickers: null };
+  if (!v.stickers) return record;
+  const tris = markTriangles(v.marks, project);
+  const insets = (v.role === 'main' ? all.filter((o) => o.role === 'back') : []).map(({ rect: r }) =>
+    [[r.x, r.y], [r.x + r.width, r.y], [r.x + r.width, r.y + r.height], [r.x, r.y + r.height]]);
+  const [ex, ey, ez] = v.camera.eye;
+  record.stickers = v.stickers.map((s, i) => {
+    const quad = s.corners.map(project);
+    const xs = quad.map((p) => p[0]), ys = quad.map((p) => p[1]);
+    const box = [Math.min(...xs), Math.max(...xs), Math.min(...ys), Math.max(...ys)];
+    const kinds = new Set();
+    for (const t of tris) {
+      if (kinds.has(t.kind) || t.box[1] <= box[0] || t.box[0] >= box[1] || t.box[3] <= box[2] || t.box[2] >= box[3]) continue;
+      if (covers(quad, t.tri)) kinds.add(t.kind);
+    }
+    if (insets.some((rect) => overlaps(quad, rect))) kinds.add('inset');
+    const [cx, cy, cz] = s.centre;
+    const to = [ex - cx, ey - cy, ez - cz];
+    const len = Math.hypot(...to);
+    return {
+      id: `${'URFDLB'[Math.floor(i / 9)]}${i % 9 + 1}`,
+      corners: quad.map(([x, y]) => [x, y]),
+      facing: (s.normal[0] * to[0] + s.normal[1] * to[1] + s.normal[2] * to[2]) / len,
+      covered: COVER_KINDS.filter((k) => kinds.has(k)),
+    };
+  });
+  return record;
+}
+
+/** Every mark's triangles in CSS px, with their bounding boxes; a line segment as a thin quad. */
+function markTriangles(marks, project) {
+  const out = [];
+  const push = (kind, tri) => {
+    const xs = tri.map((p) => p[0]), ys = tri.map((p) => p[1]);
+    out.push({ kind, tri, box: [Math.min(...xs), Math.max(...xs), Math.min(...ys), Math.max(...ys)] });
+  };
+  const m = new THREE.Matrix4(), p = new THREE.Vector3();
+  for (const mark of marks) {
+    m.fromArray(mark.matrix);
+    const pos = mark.geometry.attributes.position;
+    const index = mark.geometry.index;
+    const count = index ? index.count : pos.count;
+    const at = (k) => project(p.fromBufferAttribute(pos, index ? index.getX(k) : k).applyMatrix4(m).toArray());
+    if (mark.line) {
+      for (let k = 0; k + 1 < count; k += 2) {
+        const a = at(k), b = at(k + 1);
+        const len = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1;
+        const dx = -(b[1] - a[1]) / len * LINE_HALF_WIDTH, dy = (b[0] - a[0]) / len * LINE_HALF_WIDTH;
+        const a1 = [a[0] + dx, a[1] + dy, a[2]], a2 = [a[0] - dx, a[1] - dy, a[2]];
+        const b1 = [b[0] + dx, b[1] + dy, b[2]], b2 = [b[0] - dx, b[1] - dy, b[2]];
+        push(mark.kind, [a1, b1, b2]);
+        push(mark.kind, [a1, b2, a2]);
+      }
+      continue;
+    }
+    for (let k = 0; k + 2 < count; k += 3) push(mark.kind, [at(k), at(k + 1), at(k + 2)]);
+  }
+  return out;
+}
 
 /** Whether the cubie at `at` carries face `f` — it does when that face's normal points out of it. */
 const showsFace = (at, f) => f.n.some((component, axis) => component && component === at[axis]);
@@ -1906,6 +1993,9 @@ class CubusCube extends HTMLElement {
     // the point (Codex audit, 2026-09-16).
     this._arrow = this._arrowMat = this._arrowRimMat = this._labelMeshes = this._trailMeshes = null;
     this._trailsFor = null;
+    // The record's state, all of it: a signature left behind would match the rebuilt element's first frame and
+    // keep the record null. The revision counter is kept, so a record after a reconnect is never mistaken for one before.
+    this._drawn = this._frameRecord = this._drawnSig = null;
     this._ghostTwin?.clear();
     // And the three that hold meshes without being made of them: the lamps, and the two BOUND selector
     // sets. A bound focus or highlight is a set of sticker meshes — the whole point of binding — so it
@@ -2420,6 +2510,7 @@ class CubusCube extends HTMLElement {
     // After the cull and before `_faceCamera`, which reads the billboard flag this writes.
     this._liftLabels((this._eye ||= new THREE.Vector3()).copy(this.camera.position).normalize());
     const bv = this._attrs['back-view'] || 'none';
+    const views = [];
 
     if (this._split(w)) {
       // The right pane takes the remainder, so an odd width leaves no stale pixel column.
@@ -2432,9 +2523,11 @@ class CubusCube extends HTMLElement {
       try {
         r.setViewport(0, 0, left, h); r.setScissor(0, 0, left, h);
         this._faceCamera(this.camera);
+        views.push(this._snapView('main', this.camera, 0, 0, left, h));
         r.render(this.scene, this.camera);
-        this._renderOpposite(left, 0, right, h);
+        this._renderOpposite(left, 0, right, h, views);
       } finally { r.setScissorTest(false); }
+      this._keepFrame(views);
       return;
     }
 
@@ -2442,6 +2535,7 @@ class CubusCube extends HTMLElement {
     this.camera.updateProjectionMatrix();
     r.setViewport(0, 0, w, h);
     this._faceCamera(this.camera);
+    views.push(this._snapView('main', this.camera, 0, 0, w, h));
     r.render(this.scene, this.camera);
 
     // A degenerate inset (0×N viewport, 0/0 aspect) draws nothing anyone can see and poisons
@@ -2461,13 +2555,14 @@ class CubusCube extends HTMLElement {
         r.setScissor(x, y, iw, ih);
         r.clearDepth();
         r.autoClear = false;
-        this._renderOpposite(x, y, iw, ih);
+        this._renderOpposite(x, y, iw, ih, views);
       } finally { r.autoClear = autoClear; r.setScissorTest(false); }
     }
+    this._keepFrame(views);
   }
 
   // The second camera is this one mirrored through the origin: the far side of the cube.
-  _renderOpposite(x, y, w, h) {
+  _renderOpposite(x, y, w, h, views) {
     const r = this.renderer;
     const cam = this._back ||= new THREE.PerspectiveCamera(30, 1, 0.1, 100);
     cam.position.copy(this.camera.position).negate();
@@ -2492,6 +2587,7 @@ class CubusCube extends HTMLElement {
       r.setViewport(x, y, w, h);
       r.setScissor(x, y, w, h);
       this._faceCamera(cam);
+      views.push(this._snapView('back', cam, x, y, w, h));
       r.render(this.scene, cam);
     } finally {
       // The main view's visibility and lighting are borrowed state — a throw in render must not
@@ -2500,6 +2596,77 @@ class CubusCube extends HTMLElement {
       for (const g of hidden) g.visible = false;
       for (const g of flipped) g.visible = true;
     }
+  }
+
+  /**
+   * What one viewport is about to draw (ADR 0013 decision 2): its rect in CSS px from the element's
+   * top-left, its camera, and — when every sticker sits on a slot — the stickers and the visible marks
+   * in world space. Taken after `_faceCamera` and before `render`, because numerals turn to each camera
+   * and ghosts are culled per camera; `x`, `y` are the GL viewport's, from the bottom-left.
+   */
+  _snapView(role, cam, x, y, w, h) {
+    this.scene.updateMatrixWorld(true);
+    cam.updateMatrixWorld();
+    const stickers = this._slottedStickers();
+    return {
+      role,
+      rect: { x, y: (this.clientHeight || 1) - y - h, width: w, height: h },
+      camera: { eye: cam.position.toArray(), up: cam.up.toArray(), vfovDeg: cam.fov, aspect: cam.aspect },
+      viewProj: new THREE.Matrix4().multiplyMatrices(cam.projectionMatrix, cam.matrixWorldInverse).elements,
+      stickers,
+      marks: stickers && this._visibleMarks(),
+    };
+  }
+
+  /**
+   * The 54 stickers by facelet index of the WORLD slot each sits on, with its outward normal and the four
+   * corners of its outer face — or null while a layer or a tumble is in flight, or while any sticker is
+   * off a slot (autorotate, a `turn` phase between two holds): a sticker off its slot has no slot to name.
+   */
+  _slottedStickers() {
+    if (this._anim || this._turning) return null;
+    const out = new Array(54);
+    const centre = new THREE.Vector3(), at = new THREE.Vector3(), n = new THREE.Vector3(), z = new THREE.Vector3();
+    const onGrid = (v) => v.toArray().every((c) => Math.abs(c - Math.round(c)) < 1e-6);
+    for (const m of this.stickers) {
+      centre.setFromMatrixPosition(m.matrixWorld);
+      at.setFromMatrixPosition(m.parent.matrixWorld);
+      n.subVectors(centre, at).normalize();
+      if (!onGrid(at) || !onGrid(n)) return null;
+      const slot = at.toArray().map(Math.round);
+      const index = FACELET_INDEX[faceOfVector(n.toArray())](...slot);
+      // The sticker's outer face is whichever side of its local z points out of the cubie.
+      const { width, height, depth } = m.geometry.parameters;
+      const face = Math.sign(z.setFromMatrixColumn(m.matrixWorld, 2).dot(n)) * depth / 2;
+      const corners = [[-1, -1], [1, -1], [1, 1], [-1, 1]].map(([sx, sy]) =>
+        new THREE.Vector3(sx * width / 2, sy * height / 2, face).applyMatrix4(m.matrixWorld).toArray());
+      out[index] = { centre: centre.toArray(), normal: n.toArray().map(Math.round), corners };
+    }
+    return out;
+  }
+
+  /** Every visible mark mesh, by kind, with the world matrix it is drawn with. */
+  _visibleMarks() {
+    const marks = [];
+    const shown = (o) => { for (let p = o; p; p = p.parent) if (!p.visible) return false; return o.material?.visible !== false; };
+    const add = (kind, top) => top.traverse((o) => {
+      if (o.geometry && shown(o)) marks.push({ kind, geometry: o.geometry, line: !!o.isLineSegments, matrix: o.matrixWorld.toArray() });
+    });
+    if (this._arrow) add('arrow', this._arrow);
+    for (const m of this._labelMeshes ?? []) add('label', m);
+    for (const m of this._trailMeshes ?? []) add(m.userData.billboard ? 'numeral' : 'trail', m);
+    for (const g of this._ghostMeshes) add('ghost', g);
+    return marks;
+  }
+
+  /** Keep a drawn frame's views, with a new revision only when what they report differs from the last. */
+  _keepFrame(views) {
+    const sig = JSON.stringify(views.map(({ marks, ...v }) => [v, marks?.map((m) => [m.kind, m.geometry.id, m.matrix])]));
+    if (sig === this._drawnSig) return;
+    this._drawnSig = sig;
+    this._drawnRevision = (this._drawnRevision ?? 0) + 1;
+    this._drawn = views;
+    this._frameRecord = null;
   }
 
   _parse(alg) {
@@ -2929,6 +3096,22 @@ class CubusCube extends HTMLElement {
       out[f.key] = `#${(this._colour ||= new THREE.Color()).set(hex).getHexString()}`;
     }
     return Object.freeze(out);
+  }
+
+  /**
+   * The LAST frame rendered, as ADR 0013 decision 1 records it: `{ revision, settled, views }`, each view
+   * its role, its rect and camera, and — while settled — the 54 stickers by world slot with their CSS-px
+   * corners, how squarely each faces the eye, and which kinds of mark are drawn over it. Null before the
+   * first draw. Frozen, built once per revision, and moves nothing.
+   */
+  drawnFrame() {
+    if (!this._drawn) return null;
+    this._frameRecord ||= deepFreeze({
+      revision: this._drawnRevision,
+      settled: this._drawn[0].stickers !== null,
+      views: this._drawn.map((v) => drawnView(v, this._drawn)),
+    });
+    return this._frameRecord;
   }
 
   play() { this._playing = true; this._next(); }

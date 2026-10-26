@@ -47,6 +47,8 @@ const BUNDLES = [
       // this repository publishes as its API is now IN the bundle it draws with, which is the
       // whole point of A1: one implementation, not two.
       '../../../packages/cubus-cube/src/pose.js', '../lib/cube-pieces.js',
+      // The cover test behind `drawnFrame()` (ADR 0013).
+      '../../../packages/cubus-cube/src/cover.js',
       // The notation it reads `alg` through, and the interpreter whose face-turn arithmetic the pose
       // runs (dev-docs/tutorial-capability-plan.md items 2.1 and 2.2): the model the tutorials are
       // tested against is the one the element draws with.
