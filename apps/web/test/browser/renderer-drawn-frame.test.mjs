@@ -51,6 +51,13 @@ const build = (attrs, { width = 300, height = 300 } = {}) => page.evaluate(async
  * The record and, in the same task, the canvas it describes: a 5×5 grid inside each reported quad (inset
  * 20%), read from the drawing buffer. Nothing is redrawn — `preserveDrawingBuffer` keeps the last frame, and
  * the record is of the last frame.
+ *
+ * A grid point is read only when its WHOLE pixel lies inside the quad. A pixel the sticker's outline crosses
+ * is drawn as a blend of the sticker and the gap beside it, in any rasteriser, so it is no evidence either way.
+ * On a sticker a few pixels across the 20% inset is about a pixel, and whether a point's pixel straddles the
+ * edge turns on the fit's sub-pixel placement: in DejaVu (CI's face) the trail's numerals moved the fit so
+ * that three back-view stickers each had one grid pixel across their outline (2026-10-27). A sticker left
+ * with no whole pixel is UNREAD — `cleanStickers` does not count it and `offColour` refuses it.
  */
 const shot = () => page.evaluate(() => {
   const el = window.__cube;
@@ -62,17 +69,27 @@ const shot = () => page.evaluate(() => {
   g.drawImage(canvas, 0, 0);
   const px = g.getImageData(0, 0, c2.width, c2.height).data;
   const scale = canvas.width / el.clientWidth;
-  const at = (x, y) => {
-    const i = (Math.floor(y * scale) * c2.width + Math.floor(x * scale)) * 4;
-    return [px[i], px[i + 1], px[i + 2], px[i + 3]];
+  // Each corner of the pixel on the same side of every edge (or on it): the convex quad holds the pixel.
+  const holds = (quad, X, Y) => {
+    const side = quad.map(([x0, y0], k) => {
+      const [x1, y1] = quad[(k + 1) % quad.length];
+      return [[X, Y], [X + 1, Y], [X + 1, Y + 1], [X, Y + 1]].map(([qx, qy]) =>
+        (x1 - x0) * (qy / scale - y0) - (y1 - y0) * (qx / scale - x0));
+    }).flat();
+    return side.every((s) => s >= -1e-9) || side.every((s) => s <= 1e-9);
   };
   const steps = [0.2, 0.35, 0.5, 0.65, 0.8];
-  const samples = (rec?.views ?? []).map((v) => (v.stickers ?? []).map(({ corners: [c0, c1, c2_, c3] }) =>
-    steps.flatMap((u) => steps.map((w) => {
+  const samples = (rec?.views ?? []).map((v) => (v.stickers ?? []).map(({ corners }) => {
+    const [c0, c1, c2_, c3] = corners;
+    return steps.flatMap((u) => steps.map((w) => {
       const x = (1 - u) * (1 - w) * c0[0] + u * (1 - w) * c1[0] + u * w * c2_[0] + (1 - u) * w * c3[0];
       const y = (1 - u) * (1 - w) * c0[1] + u * (1 - w) * c1[1] + u * w * c2_[1] + (1 - u) * w * c3[1];
-      return at(x, y);
-    }))));
+      const X = Math.floor(x * scale); const Y = Math.floor(y * scale);
+      if (!holds(corners, X, Y)) return null;
+      const i = (Y * c2.width + X) * 4;
+      return [px[i], px[i + 1], px[i + 2], px[i + 3]];
+    })).filter(Boolean);
+  }));
   return { rec: JSON.parse(JSON.stringify(rec)), samples };
 });
 
@@ -101,7 +118,7 @@ function fitLight(pixels, c) {
 function lightsOf({ rec, samples }, vi) {
   const fits = {};
   rec.views[vi].stickers.forEach((st, i) => {
-    if (st.facing <= FACING) return;
+    if (st.facing <= FACING || !samples[vi][i].length) return;
     (fits[st.id[0]] ||= []).push(fitLight(samples[vi][i], PALETTE[EXPECTED[i]]));
   });
   return Object.fromEntries(Object.entries(fits).map(([f, xs]) => [f, { k: median(xs) }]));
@@ -157,7 +174,7 @@ function cleanStickers(shotData, vi) {
   const lights = lightsOf(shotData, vi);
   const out = [];
   rec.views[vi].stickers.forEach((s, i) => {
-    if (s.covered.length || s.facing <= FACING) return;
+    if (s.covered.length || s.facing <= FACING || !samples[vi][i].length) return;
     const light = lights[s.id[0]];
     const bad = samples[vi][i].filter((rgb) => !reads(rgb, EXPECTED[i], light)).map((rgb) => [rgb, classify(rgb, light)]);
     out.push({ id: s.id, bad });
@@ -175,6 +192,8 @@ const assertClean = (shotData, vi, what) => {
 
 /** Grid pixels of sticker `i` in view `vi` that do not read its slot's colour. */
 const offColour = (shotData, vi, i) => {
+  // An unread sticker would answer "no pixel is off" for a sticker nobody looked at.
+  assert.ok(shotData.samples[vi][i].length > 0, `${shotData.rec.views[vi].stickers[i].id}: no whole pixel inside it to read`);
   const light = lightsOf(shotData, vi)[shotData.rec.views[vi].stickers[i].id[0]];
   return shotData.samples[vi][i].filter((rgb) => !reads(rgb, EXPECTED[i], light));
 };
@@ -355,6 +374,11 @@ test('back view top-right: two views, the inset rect in CSS px from the top, ins
   assert.ok(meets.length > 0, 'no main-view sticker meets the inset at this size — the inset case would be vacuous');
   assert.deepEqual(main.filter((x) => x.covered.includes('inset')).map((x) => x.id), meets);
   assert.ok(s.rec.views[1].stickers.every((x) => !x.covered.includes('inset')), 'the back view is not under itself');
+  // Only a sticker a few pixels across loses grid points to its outline: the main view's keep every one.
+  const thin = main.filter((x, i) => x.facing > FACING && s.samples[0][i].length < 25).map((x) => x.id);
+  assert.deepEqual(thin, [], 'main-view stickers lost grid points to their outline — the whole-pixel rule bit where it should not');
+  const dropped = s.rec.views[1].stickers.reduce((n, x, i) => n + (x.facing > FACING ? 25 - s.samples[1][i].length : 0), 0);
+  console.log(`# back view: ${dropped} grid points on a pixel the outline crosses, not read`);
   assertClean(s, 0, 'main view under the inset');
   const clean = assertClean(s, 1, 'back view');
   assert.ok(clean.length >= 8, `only ${clean.length} clean facing stickers in the back view`);
