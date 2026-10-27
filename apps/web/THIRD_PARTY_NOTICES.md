@@ -96,7 +96,7 @@ include photographs from Wikimedia Commons:
 
 ## 3. Desktop and mobile binaries — Rust crates
 
-500 third-party crates link into the cubus binary on at least one platform (macOS,
+501 third-party crates link into the cubus binary on at least one platform (macOS,
 Windows, Linux, iOS, Android), resolved from `Cargo.lock` with `cargo tree --target all`; build
 scripts and test-only dependencies are not in the binary and are not listed. Each is listed under
 the licence it is used under, with its full expression, the authors its Cargo metadata names (who
@@ -109,7 +109,7 @@ The native shells are [Tauri](https://tauri.app) 2.12.2 (MIT OR Apache-2.0),
 which renders the web app in the platform's own webview (WebKit on Apple platforms, WebView2 on
 Windows, WebKitGTK on Linux, Android System WebView) — a system component, not redistributed.
 
-### MIT (454 crates)
+### MIT (455 crates)
 
 - **adler2** 2.0.1 (0BSD OR MIT OR Apache-2.0) — Jonas Schievink, oyvindln — <https://github.com/oyvindln/adler2> — [`LICENSE-MIT`](#text-30fefc3a7d6a)
 - **aho-corasick** 1.1.5 (Unlicense OR MIT) — Andrew Gallant — <https://github.com/BurntSushi/aho-corasick> — [`COPYING`](#text-65314a6c9668), [`LICENSE-MIT`](#text-154c1af2b38e)
@@ -453,7 +453,7 @@ Windows, WebKitGTK on Linux, Android System WebView) — a system component, not
 - **time** 0.3.55 (MIT OR Apache-2.0) — Jacob Pratt, Time contributors — <https://github.com/time-rs/time> — [`LICENSE-MIT`](#text-7fdbca77dec6)
 - **time-core** 0.1.9 (MIT OR Apache-2.0) — Jacob Pratt, Time contributors — <https://github.com/time-rs/time> — [`LICENSE-MIT`](#text-7fdbca77dec6)
 - **time-macros** 0.2.32 (MIT OR Apache-2.0) — Jacob Pratt, Time contributors — <https://github.com/time-rs/time> — [`LICENSE-MIT`](#text-7fdbca77dec6)
-- **tokio** 1.53.2 (MIT) — Tokio Contributors — <https://github.com/tokio-rs/tokio> — [`LICENSE`](#text-3e1bef82aa0d)
+- **tokio** 1.53.3 (MIT) — Tokio Contributors — <https://github.com/tokio-rs/tokio> — [`LICENSE`](#text-3e1bef82aa0d)
 - **tokio-macros** 2.7.2 (MIT) — Tokio Contributors — <https://github.com/tokio-rs/tokio> — [`LICENSE`](#text-c0fdcda1a4ff)
 - **tokio-rustls** 0.26.5 (MIT OR Apache-2.0) — <https://github.com/rustls/tokio-rustls> — [`LICENSE-MIT`](#text-1b0258c48739)
 - **tokio-stream** 0.1.19 (MIT) — Tokio Contributors — <https://github.com/tokio-rs/tokio> — [`LICENSE`](#text-3e1bef82aa0d)
@@ -541,6 +541,7 @@ Windows, WebKitGTK on Linux, Android System WebView) — a system component, not
 - **windows-strings** 0.5.1 (MIT OR Apache-2.0) — <https://github.com/microsoft/windows-rs> — [`license-mit`](#text-d9a1b1e30d63)
 - **windows-sys** 0.45.0 (MIT OR Apache-2.0) — Microsoft — <https://github.com/microsoft/windows-rs> — [`license-mit`](#text-d9a1b1e30d63)
 - **windows-sys** 0.52.0 (MIT OR Apache-2.0) — Microsoft — <https://github.com/microsoft/windows-rs> — [`license-mit`](#text-d9a1b1e30d63)
+- **windows-sys** 0.59.0 (MIT OR Apache-2.0) — Microsoft — <https://github.com/microsoft/windows-rs> — [`license-mit`](#text-d9a1b1e30d63)
 - **windows-sys** 0.60.2 (MIT OR Apache-2.0) — Microsoft — <https://github.com/microsoft/windows-rs> — [`license-mit`](#text-d9a1b1e30d63)
 - **windows-sys** 0.61.2 (MIT OR Apache-2.0) — <https://github.com/microsoft/windows-rs> — [`license-mit`](#text-d9a1b1e30d63)
 - **windows-targets** 0.42.2 (MIT OR Apache-2.0) — Microsoft — <https://github.com/microsoft/windows-rs> — [`license-mit`](#text-d9a1b1e30d63)
@@ -2600,7 +2601,7 @@ SOFTWARE.
 
 ### text-3e1bef82aa0d
 
-Carried by tokio 1.53.2 (`LICENSE`), tokio-stream 0.1.19 (`LICENSE`), tokio-util 0.7.19 (`LICENSE`).
+Carried by tokio 1.53.3 (`LICENSE`), tokio-stream 0.1.19 (`LICENSE`), tokio-util 0.7.19 (`LICENSE`).
 
 ```text
 MIT License
@@ -9166,7 +9167,7 @@ insights.
 
 ### text-d9a1b1e30d63
 
-Carried by windows 0.62.2 (`license-mit`), windows_aarch64_gnullvm 0.42.2 (`license-mit`), windows_aarch64_gnullvm 0.52.6 (`license-mit`), windows_aarch64_gnullvm 0.53.1 (`license-mit`), windows_aarch64_msvc 0.42.2 (`license-mit`), windows_aarch64_msvc 0.52.6 (`license-mit`), windows_aarch64_msvc 0.53.1 (`license-mit`), windows_i686_gnu 0.42.2 (`license-mit`), windows_i686_gnu 0.52.6 (`license-mit`), windows_i686_gnu 0.53.1 (`license-mit`), windows_i686_gnullvm 0.52.6 (`license-mit`), windows_i686_gnullvm 0.53.1 (`license-mit`), windows_i686_msvc 0.42.2 (`license-mit`), windows_i686_msvc 0.52.6 (`license-mit`), windows_i686_msvc 0.53.1 (`license-mit`), windows_x86_64_gnu 0.42.2 (`license-mit`), windows_x86_64_gnu 0.52.6 (`license-mit`), windows_x86_64_gnu 0.53.1 (`license-mit`), windows_x86_64_gnullvm 0.42.2 (`license-mit`), windows_x86_64_gnullvm 0.52.6 (`license-mit`), windows_x86_64_gnullvm 0.53.1 (`license-mit`), windows_x86_64_msvc 0.42.2 (`license-mit`), windows_x86_64_msvc 0.52.6 (`license-mit`), windows_x86_64_msvc 0.53.1 (`license-mit`), windows-collections 0.3.2 (`license-mit`), windows-core 0.62.2 (`license-mit`), windows-future 0.3.2 (`license-mit`), windows-implement 0.60.2 (`license-mit`), windows-interface 0.59.3 (`license-mit`), windows-link 0.2.1 (`license-mit`), windows-numerics 0.3.1 (`license-mit`), windows-registry 0.6.1 (`license-mit`), windows-result 0.4.1 (`license-mit`), windows-strings 0.5.1 (`license-mit`), windows-sys 0.45.0 (`license-mit`), windows-sys 0.52.0 (`license-mit`), windows-sys 0.60.2 (`license-mit`), windows-sys 0.61.2 (`license-mit`), windows-targets 0.42.2 (`license-mit`), windows-targets 0.52.6 (`license-mit`), windows-targets 0.53.5 (`license-mit`), windows-threading 0.2.1 (`license-mit`), windows-version 0.1.7 (`license-mit`).
+Carried by windows 0.62.2 (`license-mit`), windows_aarch64_gnullvm 0.42.2 (`license-mit`), windows_aarch64_gnullvm 0.52.6 (`license-mit`), windows_aarch64_gnullvm 0.53.1 (`license-mit`), windows_aarch64_msvc 0.42.2 (`license-mit`), windows_aarch64_msvc 0.52.6 (`license-mit`), windows_aarch64_msvc 0.53.1 (`license-mit`), windows_i686_gnu 0.42.2 (`license-mit`), windows_i686_gnu 0.52.6 (`license-mit`), windows_i686_gnu 0.53.1 (`license-mit`), windows_i686_gnullvm 0.52.6 (`license-mit`), windows_i686_gnullvm 0.53.1 (`license-mit`), windows_i686_msvc 0.42.2 (`license-mit`), windows_i686_msvc 0.52.6 (`license-mit`), windows_i686_msvc 0.53.1 (`license-mit`), windows_x86_64_gnu 0.42.2 (`license-mit`), windows_x86_64_gnu 0.52.6 (`license-mit`), windows_x86_64_gnu 0.53.1 (`license-mit`), windows_x86_64_gnullvm 0.42.2 (`license-mit`), windows_x86_64_gnullvm 0.52.6 (`license-mit`), windows_x86_64_gnullvm 0.53.1 (`license-mit`), windows_x86_64_msvc 0.42.2 (`license-mit`), windows_x86_64_msvc 0.52.6 (`license-mit`), windows_x86_64_msvc 0.53.1 (`license-mit`), windows-collections 0.3.2 (`license-mit`), windows-core 0.62.2 (`license-mit`), windows-future 0.3.2 (`license-mit`), windows-implement 0.60.2 (`license-mit`), windows-interface 0.59.3 (`license-mit`), windows-link 0.2.1 (`license-mit`), windows-numerics 0.3.1 (`license-mit`), windows-registry 0.6.1 (`license-mit`), windows-result 0.4.1 (`license-mit`), windows-strings 0.5.1 (`license-mit`), windows-sys 0.45.0 (`license-mit`), windows-sys 0.52.0 (`license-mit`), windows-sys 0.59.0 (`license-mit`), windows-sys 0.60.2 (`license-mit`), windows-sys 0.61.2 (`license-mit`), windows-targets 0.42.2 (`license-mit`), windows-targets 0.52.6 (`license-mit`), windows-targets 0.53.5 (`license-mit`), windows-threading 0.2.1 (`license-mit`), windows-version 0.1.7 (`license-mit`).
 
 ```text
     MIT License
