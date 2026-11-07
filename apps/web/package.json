@@ -35,7 +35,7 @@
     "acorn": "8.19.0",
     "esbuild": "^0.28.2",
     "happy-dom": "^20.14.6",
-    "playwright": "1.64.0",
+    "playwright": "1.64.1",
     "smartcube-web-bluetooth": "github:xiaolai/smartcube-web-bluetooth#3d3e05872fb9a560be003d4a68ce34adfc7ae930",
     "tauri-plugin-mcp": "0.3.1"
   },
